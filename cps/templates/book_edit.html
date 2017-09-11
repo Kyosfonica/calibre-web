@@ -115,6 +115,7 @@
           </div>
         {% endfor %}
       {% endif %}
+
       {% if g.user.role_upload() or g.user.role_admin()%}
         {% if g.allow_upload %}
           <div role="group" aria-label="Upload new book format">
