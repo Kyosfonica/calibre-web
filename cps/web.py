@@ -8,10 +8,21 @@ except ImportError:
     gdrive_support = False
 
 try:
-    from goodreads import client as gr_client
+    from goodreads.client import GoodreadsClient
     goodreads_support = True
 except ImportError:
     goodreads_support = False
+
+try:
+    import Levenshtein
+    levenshtein_support = True
+except ImportError:
+    levenshtein_support = False
+
+try:
+    from functools import reduce
+except ImportError:
+    pass  # We're not using Python 3
 
 import mimetypes
 import logging
@@ -21,6 +32,7 @@ from flask import (Flask, render_template, request, Response, redirect,
                    url_for, send_from_directory, make_response, g, flash,
                    abort, Markup, stream_with_context)
 from flask import __version__ as flaskVersion
+import cache_buster
 import ub
 from ub import config
 import helper
@@ -67,6 +79,7 @@ import hashlib
 from redirect import redirect_back, is_safe_url
 
 from tornado import version as tornadoVersion
+from socket import error as SocketError
 
 try:
     from urllib.parse import quote
@@ -145,7 +158,7 @@ class Gauth:
 @Singleton
 class Gdrive:
     def __init__(self):
-        self.drive = gdriveutils.getDrive(Gauth.Instance().auth)
+        self.drive = gdriveutils.getDrive(gauth=Gauth.Instance().auth)
 
 
 class ReverseProxied(object):
@@ -190,6 +203,7 @@ class ReverseProxied(object):
 mimetypes.init()
 mimetypes.add_type('application/xhtml+xml', '.xhtml')
 mimetypes.add_type('application/epub+zip', '.epub')
+mimetypes.add_type('application/fb2+zip', '.fb2')
 mimetypes.add_type('application/x-mobipocket-ebook', '.mobi')
 mimetypes.add_type('application/x-mobipocket-ebook', '.prc')
 mimetypes.add_type('application/vnd.amazon.ebook', '.azw')
@@ -200,6 +214,7 @@ mimetypes.add_type('image/vnd.djvu', '.djvu')
 
 app = (Flask(__name__))
 app.wsgi_app = ReverseProxied(app.wsgi_app)
+cache_buster.init_cache_busting(app)
 
 gevent_server = None
 
@@ -369,9 +384,12 @@ app.jinja_env.globals['url_for_other_page'] = url_for_other_page
 
 
 def login_required_if_no_ano(func):
-    if config.config_anonbrowse == 1:
-        return func
-    return login_required(func)
+    @wraps(func)
+    def decorated_view(*args, **kwargs):
+        if config.config_anonbrowse == 1:
+            return func(*args, **kwargs)
+        return login_required(func)(*args, **kwargs)
+    return decorated_view
 
 
 def remote_login_required(f):
@@ -499,24 +517,29 @@ def edit_required(f):
     return inner
 
 
-# Fill indexpage with all requested data from database
-def fill_indexpage(page, database, db_filter, order):
+# Language and content filters
+def common_filters():
     if current_user.filter_language() != "all":
         lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
     else:
-        lang_filter = True
+        lang_filter = true()
     content_rating_filter = false() if current_user.mature_content else \
         db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
+    return and_(lang_filter, ~content_rating_filter)
+
+
+# Fill indexpage with all requested data from database
+def fill_indexpage(page, database, db_filter, order):
     if current_user.show_detail_random():
-        random = db.session.query(db.Books).filter(lang_filter).filter(~content_rating_filter)\
+        random = db.session.query(db.Books).filter(common_filters())\
             .order_by(func.random()).limit(config.config_random_books)
     else:
         random = false
     off = int(int(config.config_books_per_page) * (page - 1))
     pagination = Pagination(page, config.config_books_per_page,
                             len(db.session.query(database)
-                                .filter(db_filter).filter(lang_filter).filter(~content_rating_filter).all()))
-    entries = db.session.query(database).filter(db_filter).filter(lang_filter).filter(~content_rating_filter)\
+                                .filter(db_filter).filter(common_filters()).all()))
+    entries = db.session.query(database).filter(db_filter).filter(common_filters())\
         .order_by(order).offset(off).limit(config.config_books_per_page)
     return entries, random, pagination
 
@@ -600,7 +623,7 @@ def before_request():
     g.user = current_user
     g.allow_registration = config.config_public_reg
     g.allow_upload = config.config_uploading
-    g.public_shelfes = ub.session.query(ub.Shelf).filter(ub.Shelf.is_public == 1).all()
+    g.public_shelfes = ub.session.query(ub.Shelf).filter(ub.Shelf.is_public == 1).order_by(ub.Shelf.name).all()
     if not config.db_configured and request.endpoint not in ('basic_configuration', 'login') and '/static/' not in request.path:
         return redirect(url_for('basic_configuration'))
 
@@ -612,7 +635,7 @@ def before_request():
 def feed_index():
     xml = render_title_template('index.xml')
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -621,7 +644,7 @@ def feed_index():
 def feed_osd():
     xml = render_title_template('osd.xml', lang='de-DE')
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/xml; charset=utf-8"
     return response
 
 
@@ -638,26 +661,20 @@ def feed_normal_search():
 
 
 def feed_search(term):
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     if term:
         entries = db.session.query(db.Books).filter(db.or_(db.Books.tags.any(db.Tags.name.like("%" + term + "%")),
                                                     db.Books.series.any(db.Series.name.like("%" + term + "%")),
                                                     db.Books.authors.any(db.Authors.name.like("%" + term + "%")),
                                                     db.Books.publishers.any(db.Publishers.name.like("%" + term + "%")),
                                                     db.Books.title.like("%" + term + "%")))\
-            .filter(lang_filter).filter(~content_rating_filter).all()
+            .filter(common_filters()).all()
         entriescount = len(entries) if len(entries) > 0 else 1
         pagination = Pagination(1, entriescount, entriescount)
         xml = render_title_template('feed.xml', searchterm=term, entries=entries, pagination=pagination)
     else:
         xml = render_title_template('feed.xml', searchterm="")
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -671,25 +688,19 @@ def feed_new():
                                                  db.Books, True, db.Books.timestamp.desc())
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
 @app.route("/opds/discover")
 @requires_basic_auth_if_no_ano
 def feed_discover():
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
-    entries = db.session.query(db.Books).filter(lang_filter).filter(~content_rating_filter).order_by(func.random())\
+    entries = db.session.query(db.Books).filter(common_filters()).order_by(func.random())\
         .limit(config.config_books_per_page)
     pagination = Pagination(1, config.config_books_per_page, int(config.config_books_per_page))
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -703,7 +714,7 @@ def feed_best_rated():
                     db.Books, db.Books.ratings.any(db.Ratings.rating > 9), db.Books.timestamp.desc())
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -713,12 +724,6 @@ def feed_hot():
     off = request.args.get("offset")
     if not off:
         off = 0
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     all_books = ub.session.query(ub.Downloads, ub.func.count(ub.Downloads.book_id)).order_by(
         ub.func.count(ub.Downloads.book_id).desc()).group_by(ub.Downloads.book_id)
     hot_books = all_books.offset(off).limit(config.config_books_per_page)
@@ -727,8 +732,8 @@ def feed_hot():
         downloadBook = db.session.query(db.Books).filter(db.Books.id == book.Downloads.book_id).first()
         if downloadBook:
             entries.append(
-                db.session.query(db.Books).filter(lang_filter).filter(~content_rating_filter)
-                    .filter(db.Books.id == book.Downloads.book_id).first()
+                db.session.query(db.Books).filter(common_filters())
+                .filter(db.Books.id == book.Downloads.book_id).first()
             )
         else:
             ub.session.query(ub.Downloads).filter(book.Downloads.book_id == ub.Downloads.book_id).delete()
@@ -737,7 +742,7 @@ def feed_hot():
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page, numBooks)
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -747,20 +752,13 @@ def feed_authorindex():
     off = request.args.get("offset")
     if not off:
         off = 0
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
-    entries = db.session.query(db.Authors).join(db.books_authors_link).join(db.Books)\
-        .filter(lang_filter).filter(~content_rating_filter)\
+    entries = db.session.query(db.Authors).join(db.books_authors_link).join(db.Books).filter(common_filters())\
         .group_by('books_authors_link.author').order_by(db.Authors.sort).limit(config.config_books_per_page).offset(off)
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
                             len(db.session.query(db.Authors).all()))
     xml = render_title_template('feed.xml', listelements=entries, folder='feed_author', pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -774,7 +772,7 @@ def feed_author(book_id):
                     db.Books, db.Books.authors.any(db.Authors.id == book_id), db.Books.timestamp.desc())
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -784,20 +782,13 @@ def feed_categoryindex():
     off = request.args.get("offset")
     if not off:
         off = 0
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
-    entries = db.session.query(db.Tags).join(db.books_tags_link).join(db.Books)\
-        .filter(lang_filter).filter(~content_rating_filter)\
+    entries = db.session.query(db.Tags).join(db.books_tags_link).join(db.Books).filter(common_filters())\
         .group_by('books_tags_link.tag').order_by(db.Tags.name).offset(off).limit(config.config_books_per_page)
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
                             len(db.session.query(db.Tags).all()))
     xml = render_title_template('feed.xml', listelements=entries, folder='feed_category', pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -807,11 +798,11 @@ def feed_category(book_id):
     off = request.args.get("offset")
     if not off:
         off = 0
-    entries, random, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
+    entries, __, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
                     db.Books, db.Books.tags.any(db.Tags.id == book_id), db.Books.timestamp.desc())
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -821,20 +812,13 @@ def feed_seriesindex():
     off = request.args.get("offset")
     if not off:
         off = 0
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
-    entries = db.session.query(db.Series).join(db.books_series_link).join(db.Books)\
-        .filter(lang_filter).filter(~content_rating_filter)\
+    entries = db.session.query(db.Series).join(db.books_series_link).join(db.Books).filter(common_filters())\
         .group_by('books_series_link.series').order_by(db.Series.sort).offset(off).all()
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
                             len(db.session.query(db.Series).all()))
     xml = render_title_template('feed.xml', listelements=entries, folder='feed_series', pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -848,7 +832,7 @@ def feed_series(book_id):
                     db.Books, db.Books.series.any(db.Series.id == book_id),db.Books.series_index)
     xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
     response = make_response(xml)
-    response.headers["Content-Type"] = "application/xml"
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
     return response
 
 
@@ -893,7 +877,11 @@ def get_opds_download_link(book_id, book_format):
     file_name = helper.get_valid_filename(file_name)
     headers = Headers()
     headers["Content-Disposition"] = "attachment; filename*=UTF-8''%s.%s" % (quote(file_name.encode('utf8')), book_format)
-    app.logger.info(time.time()-startTime)
+    try:
+        headers["Content-Type"] = mimetypes.types_map['.' + book_format]
+    except KeyError:
+        headers["Content-Type"] = "application/octet-stream"
+    app.logger.info(time.time() - startTime)
     startTime = time.time()
     if config.config_use_google_drive:
         app.logger.info(time.time() - startTime)
@@ -1094,14 +1082,8 @@ def titles_descending(page):
 @app.route('/hot/page/<int:page>')
 @login_required_if_no_ano
 def hot_books(page):
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     if current_user.show_detail_random():
-        random = db.session.query(db.Books).filter(lang_filter).filter(~content_rating_filter)\
+        random = db.session.query(db.Books).filter(common_filters())\
             .order_by(func.random()).limit(config.config_random_books)
     else:
         random = false
@@ -1111,12 +1093,9 @@ def hot_books(page):
     hot_books = all_books.offset(off).limit(config.config_books_per_page)
     entries = list()
     for book in hot_books:
-        downloadBook = db.session.query(db.Books).filter(db.Books.id == book.Downloads.book_id).first()
+        downloadBook = db.session.query(db.Books).filter(common_filters()).filter(db.Books.id == book.Downloads.book_id).first()
         if downloadBook:
-            entries.append(
-                db.session.query(db.Books).filter(lang_filter).filter(~content_rating_filter)
-                    .filter(db.Books.id == book.Downloads.book_id).first()
-            )
+            entries.append(downloadBook)
         else:
             ub.session.query(ub.Downloads).filter(book.Downloads.book_id == ub.Downloads.book_id).delete()
             ub.session.commit()
@@ -1148,16 +1127,11 @@ def discover(page):
 @app.route("/author")
 @login_required_if_no_ano
 def author_list():
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     entries = db.session.query(db.Authors, func.count('books_authors_link.book').label('count'))\
-        .join(db.books_authors_link).join(db.Books)\
-        .filter(lang_filter).filter(~content_rating_filter)\
+        .join(db.books_authors_link).join(db.Books).filter(common_filters())\
         .group_by('books_authors_link.author').order_by(db.Authors.sort).all()
+    for entry in entries:
+        entry.Authors.name=entry.Authors.name.replace('|',',')
     return render_title_template('list.html', entries=entries, folder='author', title=_(u"Author list"))
 
 
@@ -1165,35 +1139,50 @@ def author_list():
 @app.route("/author/<int:book_id>/<int:page>'")
 @login_required_if_no_ano
 def author(book_id, page):
-    entries, random, pagination = fill_indexpage(page, db.Books, db.Books.authors.any(db.Authors.id == book_id),
+    entries, __, pagination = fill_indexpage(page, db.Books, db.Books.authors.any(db.Authors.id == book_id),
                                                  db.Books.timestamp.desc())
-    if entries:
-        name = db.session.query(db.Authors).filter(db.Authors.id == book_id).first().name
-
-        author_info = None
-        if goodreads_support and config.config_use_goodreads:
-            gc = gr_client.GoodreadsClient(config.config_goodreads_api_key, config.config_goodreads_api_secret)
-            author_info = gc.find_author(author_name=name)
-
-        return render_title_template('author.html', entries=entries, pagination=pagination,
-                                     title=name, author=author_info)
-    else:
+    if entries is None:
         flash(_(u"Error opening eBook. File does not exist or file is not accessible:"), category="error")
         return redirect(url_for("index"))
+
+    name = (db.session.query(db.Authors).filter(db.Authors.id == book_id).first().name).replace('|',',')
+
+    author_info = None
+    other_books = []
+    if goodreads_support and config.config_use_goodreads:
+        gc = GoodreadsClient(config.config_goodreads_api_key, config.config_goodreads_api_secret)
+        author_info = gc.find_author(author_name=name)
+        other_books = get_unique_other_books(entries.all(), author_info.books)
+
+    return render_title_template('author.html', entries=entries, pagination=pagination,
+                                 title=name, author=author_info, other_books=other_books)
+
+
+def get_unique_other_books(library_books, author_books):
+    # Get all identifiers (ISBN, Goodreads, etc) and filter author's books by that list so we show fewer duplicates
+    # Note: Not all images will be shown, even though they're available on Goodreads.com.
+    #       See https://www.goodreads.com/topic/show/18213769-goodreads-book-images
+    identifiers = reduce(lambda acc, book: acc + map(lambda identifier: identifier.val, book.identifiers), library_books, [])
+    other_books = filter(lambda book: book.isbn not in identifiers and book.gid["#text"] not in identifiers, author_books)
+
+    # Fuzzy match book titles
+    if levenshtein_support:
+        library_titles = reduce(lambda acc, book: acc + [book.title], library_books, [])
+        other_books = filter(lambda author_book: not filter(
+            lambda library_book:
+            Levenshtein.ratio(re.sub(r"\(.*\)", "", author_book.title), library_book) > 0.7,  # Remove items in parentheses before comparing
+            library_titles
+        ), other_books)
+
+    return other_books
+
 
 
 @app.route("/series")
 @login_required_if_no_ano
 def series_list():
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     entries = db.session.query(db.Series, func.count('books_series_link.book').label('count'))\
-        .join(db.books_series_link).join(db.Books)\
-        .filter(lang_filter).filter(~content_rating_filter)\
+        .join(db.books_series_link).join(db.Books).filter(common_filters())\
         .group_by('books_series_link.series').order_by(db.Series.sort).all()
     return render_title_template('list.html', entries=entries, folder='series', title=_(u"Series list"))
 
@@ -1226,13 +1215,12 @@ def language_overview():
                 lang.name = _(isoLanguages.get(part3=lang.lang_code).name)
     else:
         try:
-            langfound = 1
             cur_l = LC.parse(current_user.filter_language())
         except Exception:
-            langfound = 0
+            cur_l = None
         languages = db.session.query(db.Languages).filter(
             db.Languages.lang_code == current_user.filter_language()).all()
-        if langfound:
+        if cur_l:
             languages[0].name = cur_l.get_language_name(get_locale())
         else:
             languages[0].name = _(isoLanguages.get(part3=languages[0].lang_code).name)
@@ -1261,15 +1249,8 @@ def language(name, page):
 @app.route("/category")
 @login_required_if_no_ano
 def category_list():
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     entries = db.session.query(db.Tags, func.count('books_tags_link.book').label('count'))\
-        .join(db.books_tags_link).join(db.Books)\
-        .filter(lang_filter).filter(~content_rating_filter)\
+        .join(db.books_tags_link).join(db.Books).order_by(db.Tags.name).filter(common_filters())\
         .group_by('books_tags_link.tag').all()
     return render_title_template('list.html', entries=entries, folder='category', title=_(u"Category list"))
 
@@ -1307,14 +1288,7 @@ def toggle_read(book_id):
 @app.route("/book/<int:book_id>")
 @login_required_if_no_ano
 def show_book(book_id):
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
-    entries = db.session.query(db.Books)\
-        .filter(db.Books.id == book_id).filter(lang_filter).filter(~content_rating_filter).first()
+    entries = db.session.query(db.Books).filter(db.Books.id == book_id).filter(common_filters()).first()
     if entries:
         for index in range(0, len(entries.languages)):
             try:
@@ -1338,7 +1312,7 @@ def show_book(book_id):
         for entry in shelfs:
             book_in_shelfs.append(entry.shelf)
 
-        if not current_user.is_anonymous():
+        if not current_user.is_anonymous:
             matching_have_read_book = ub.session.query(ub.ReadBook).filter(ub.and_(ub.ReadBook.user_id == int(current_user.id),
                                                                    ub.ReadBook.book_id == book_id)).all()
             have_read = len(matching_have_read_book) > 0 and matching_have_read_book[0].is_read
@@ -1350,6 +1324,26 @@ def show_book(book_id):
     else:
         flash(_(u"Error opening eBook. File does not exist or file is not accessible:"), category="error")
         return redirect(url_for("index"))
+
+
+@app.route("/ajax/bookmark/<int:book_id>/<book_format>", methods=['POST'])
+@login_required
+def bookmark(book_id, book_format):
+    bookmark_key = request.form["bookmark"]
+    ub.session.query(ub.Bookmark).filter(ub.and_(ub.Bookmark.user_id == int(current_user.id),
+                                                 ub.Bookmark.book_id == book_id,
+                                                 ub.Bookmark.format == book_format)).delete()
+    if not bookmark_key:
+        ub.session.commit()
+        return "", 204
+
+    bookmark = ub.Bookmark(user_id=current_user.id,
+                           book_id=book_id,
+                           format=book_format,
+                           bookmark_key=bookmark_key)
+    ub.session.merge(bookmark)
+    ub.session.commit()
+    return "", 201
 
 
 @app.route("/admin")
@@ -1587,18 +1581,12 @@ def update():
 def search():
     term = request.args.get("query").strip()
     if term:
-        if current_user.filter_language() != "all":
-            lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-        else:
-            lang_filter = True
-        content_rating_filter = false() if current_user.mature_content else \
-            db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
         entries = db.session.query(db.Books).filter(db.or_(db.Books.tags.any(db.Tags.name.like("%" + term + "%")),
                                                     db.Books.series.any(db.Series.name.like("%" + term + "%")),
                                                     db.Books.authors.any(db.Authors.name.like("%" + term + "%")),
                                                     db.Books.publishers.any(db.Publishers.name.like("%" + term + "%")),
                                                     db.Books.title.like("%" + term + "%")))\
-            .filter(lang_filter).filter(~content_rating_filter).all()
+            .filter(common_filters()).all()
         return render_title_template('search.html', searchterm=term, entries=entries)
     else:
         return render_title_template('search.html', searchterm="")
@@ -1732,15 +1720,21 @@ def feed_get_cover(book_id):
 
 
 def render_read_books(page, are_read, as_xml=False):
-    readBooks = ub.session.query(ub.ReadBook).filter(ub.ReadBook.user_id == int(current_user.id)).filter(ub.ReadBook.is_read == True).all()
-    readBookIds = [x.book_id for x in readBooks]
-    if are_read:
-        db_filter = db.Books.id.in_(readBookIds)
-    else:
-        db_filter = ~db.Books.id.in_(readBookIds)
+    if not current_user.is_anonymous:
+        readBooks = ub.session.query(ub.ReadBook).filter(ub.ReadBook.user_id == int(current_user.id)).filter(ub.ReadBook.is_read == True).all()
+        readBookIds = [x.book_id for x in readBooks]
+        if are_read:
+            db_filter = db.Books.id.in_(readBookIds)
+        else:
+            db_filter = ~db.Books.id.in_(readBookIds)
 
-    entries, random, pagination = fill_indexpage(page, db.Books,
-        db_filter, db.Books.timestamp.desc())
+        entries, random, pagination = fill_indexpage(page, db.Books,
+            db_filter, db.Books.timestamp.desc())
+    else:
+        entries = []
+        random = False
+        pagination = Pagination(page, 1, 0)
+
     if as_xml:
         xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
         response = make_response(xml)
@@ -1792,48 +1786,54 @@ def unread_books(page):
 @login_required_if_no_ano
 def read_book(book_id, book_format):
     book = db.session.query(db.Books).filter(db.Books.id == book_id).first()
-    if book:
-        book_dir = os.path.join(config.get_main_dir, "cps", "static", str(book_id))
-        if not os.path.exists(book_dir):
-            os.mkdir(book_dir)
-        if book_format.lower() == "epub":
-            # check if mimetype file is exists
-            mime_file = str(book_id) + "/mimetype"
-            if not os.path.exists(mime_file):
-                epub_file = os.path.join(config.config_calibre_dir, book.path, book.data[0].name) + ".epub"
-                if not os.path.isfile(epub_file):
-                    raise ValueError('Error opening eBook. File does not exist: ', epub_file)
-                zfile = zipfile.ZipFile(epub_file)
-                for name in zfile.namelist():
-                    (dirName, fileName) = os.path.split(name)
-                    newDir = os.path.join(book_dir, dirName)
-                    if not os.path.exists(newDir):
-                        try:
-                            os.makedirs(newDir)
-                        except OSError as exception:
-                            if not exception.errno == errno.EEXIST:
-                                raise
-                    if fileName:
-                        fd = open(os.path.join(newDir, fileName), "wb")
-                        fd.write(zfile.read(name))
-                        fd.close()
-                zfile.close()
-            return render_title_template('read.html', bookid=book_id, title=_(u"Read a Book"))
-        elif book_format.lower() == "pdf":
-            return render_title_template('readpdf.html', pdffile=book_id, title=_(u"Read a Book"))
-        elif book_format.lower() == "txt":
-            return render_title_template('readtxt.html', txtfile=book_id, title=_(u"Read a Book"))
-        elif book_format.lower() == "cbr":
-            all_name = str(book_id) + "/" + book.data[0].name + ".cbr"
-            tmp_file = os.path.join(book_dir, book.data[0].name) + ".cbr"
-            if not os.path.exists(all_name):
-                cbr_file = os.path.join(config.config_calibre_dir, book.path, book.data[0].name) + ".cbr"
-                copyfile(cbr_file, tmp_file)
-            return render_title_template('readcbr.html', comicfile=all_name, title=_(u"Read a Book"))
-
-    else:
+    if not book:
         flash(_(u"Error opening eBook. File does not exist or file is not accessible:"), category="error")
         return redirect(url_for("index"))
+
+    book_dir = os.path.join(config.get_main_dir, "cps", "static", str(book_id))
+    if not os.path.exists(book_dir):
+        os.mkdir(book_dir)
+    bookmark = None
+    if current_user.is_authenticated:
+        bookmark = ub.session.query(ub.Bookmark).filter(ub.and_(ub.Bookmark.user_id == int(current_user.id),
+                                                            ub.Bookmark.book_id == book_id,
+                                                            ub.Bookmark.format == book_format.upper())).first()
+    if book_format.lower() == "epub":
+        # check if mimetype file is exists
+        mime_file = str(book_id) + "/mimetype"
+        if not os.path.exists(mime_file):
+            epub_file = os.path.join(config.config_calibre_dir, book.path, book.data[0].name) + ".epub"
+            if not os.path.isfile(epub_file):
+                raise ValueError('Error opening eBook. File does not exist: ', epub_file)
+            zfile = zipfile.ZipFile(epub_file)
+            for name in zfile.namelist():
+                (dirName, fileName) = os.path.split(name)
+                newDir = os.path.join(book_dir, dirName)
+                if not os.path.exists(newDir):
+                    try:
+                        os.makedirs(newDir)
+                    except OSError as exception:
+                        if not exception.errno == errno.EEXIST:
+                            raise
+                if fileName:
+                    fd = open(os.path.join(newDir, fileName), "wb")
+                    fd.write(zfile.read(name))
+                    fd.close()
+            zfile.close()
+        return render_title_template('read.html', bookid=book_id, title=_(u"Read a Book"), bookmark=bookmark)
+    elif book_format.lower() == "pdf":
+        return render_title_template('readpdf.html', pdffile=book_id, title=_(u"Read a Book"))
+    elif book_format.lower() == "txt":
+        return render_title_template('readtxt.html', txtfile=book_id, title=_(u"Read a Book"))
+    else:
+        for fileext in ["cbr","cbt","cbz"]:
+            if book_format.lower() == fileext:
+                all_name = str(book_id) + "/" + book.data[0].name + "." + fileext
+                tmp_file = os.path.join(book_dir, book.data[0].name) + "." + fileext
+                if not os.path.exists(all_name):
+                    cbr_file = os.path.join(config.config_calibre_dir, book.path, book.data[0].name) + "." + fileext
+                    copyfile(cbr_file, tmp_file)
+                return render_title_template('readcbr.html', comicfile=all_name, title=_(u"Read a Book"))
 
 
 @app.route("/download/<int:book_id>/<book_format>")
@@ -2188,10 +2188,11 @@ def edit_shelf(shelf_id):
 @login_required
 def delete_shelf(shelf_id):
     cur_shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.id == shelf_id).first()
+    deleted = false
     if current_user.role_admin():
         deleted = ub.session.query(ub.Shelf).filter(ub.Shelf.id == shelf_id).delete()
     else:
-        if not cur_shelf.is_public and not cur_shelf.user_id == int(current_user.id) \
+        if (not cur_shelf.is_public and cur_shelf.user_id == int(current_user.id)) \
                 or (cur_shelf.is_public and current_user.role_edit_shelfs()):
             deleted = ub.session.query(ub.Shelf).filter(ub.or_(ub.and_(ub.Shelf.user_id == int(current_user.id),
                                                                    ub.Shelf.id == shelf_id),
@@ -2208,7 +2209,7 @@ def delete_shelf(shelf_id):
 @app.route("/shelf/<int:shelf_id>")
 @login_required_if_no_ano
 def show_shelf(shelf_id):
-    if current_user.is_anonymous():
+    if current_user.is_anonymous:
         shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.is_public == 1, ub.Shelf.id == shelf_id).first()
     else:
         shelf = ub.session.query(ub.Shelf).filter(ub.or_(ub.and_(ub.Shelf.user_id == int(current_user.id),
@@ -2243,7 +2244,7 @@ def order_shelf(shelf_id):
             setattr(book, 'order', to_save[str(book.book_id)])
             counter += 1
         ub.session.commit()
-    if current_user.is_anonymous():
+    if current_user.is_anonymous:
         shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.is_public == 1, ub.Shelf.id == shelf_id).first()
     else:
         shelf = ub.session.query(ub.Shelf).filter(ub.or_(ub.and_(ub.Shelf.user_id == int(current_user.id),
@@ -2741,14 +2742,8 @@ def edit_book(book_id):
     # create the function for sorting...
     db.session.connection().connection.connection.create_function("title_sort", 1, db.title_sort)
     cc = db.session.query(db.Custom_Columns).filter(db.Custom_Columns.datatype.notin_(db.cc_exceptions)).all()
-    if current_user.filter_language() != "all":
-        lang_filter = db.Books.languages.any(db.Languages.lang_code == current_user.filter_language())
-    else:
-        lang_filter = True
-    content_rating_filter = false() if current_user.mature_content else \
-        db.Books.tags.any(db.Tags.name.in_(config.mature_content_tags()))
     book = db.session.query(db.Books)\
-        .filter(db.Books.id == book_id).filter(lang_filter).filter(~content_rating_filter).first()
+        .filter(db.Books.id == book_id).filter(common_filters()).first()
     author_names = []
 
     # Book not found
@@ -2763,7 +2758,7 @@ def edit_book(book_id):
         except Exception:
             book.languages[index].language_name = _(isoLanguages.get(part3=book.languages[index].lang_code).name)
     for author in book.authors:
-        author_names.append(author.name)
+        author_names.append(author.name.replace('|',','))
 
     # Show form
     if request.method != 'POST':
@@ -2772,12 +2767,41 @@ def edit_book(book_id):
 
     # Update book
     edited_books_id = set()
+
+    # Check and handle Uploaded file
+    if 'btn-upload-format' in request.files and '.' in request.files['btn-upload-format'].filename:
+        requested_file = request.files['btn-upload-format']
+        file_ext = requested_file.filename.rsplit('.', 1)[-1].lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            flash(_('File extension "%s" is not allowed to be uploaded to this server' % file_ext), category="error")
+            return redirect(url_for('index'))
+
+        file_name = book.path.rsplit('/', 1)[-1]
+        filepath = config.config_calibre_dir + os.sep + book.path
+        filepath = os.path.normpath(filepath)
+        saved_filename = filepath + os.sep + file_name + '.' + file_ext
+
+        try:
+            requested_file.save(saved_filename)
+        except OSError:
+            flash(_(u"Failed to store file %s." % saved_filename), category="error")
+            return redirect(url_for('index'))
+
+        file_size = os.path.getsize(saved_filename)
+        is_format = db.session.query(db.Data).filter(db.Data.book == book_id).filter(db.Data.format == file_ext.upper()).first()
+        if is_format:
+            # Format entry already exists, no need to update the database
+            pass
+        else:
+            db_format = db.Data(book_id, file_ext.upper(), file_size, file_name)
+            db.session.add(db_format)
+
     to_save = request.form.to_dict()
     if book.title != to_save["book_title"]:
         book.title = to_save["book_title"]
         edited_books_id.add(book.id)
     input_authors = to_save["author_name"].split('&')
-    input_authors = map(lambda it: it.strip(), input_authors)
+    input_authors = map(lambda it: it.strip().replace(',','|'), input_authors)
     # we have all author names now
     if input_authors == ['']:
         input_authors = [_(u'unknown')]  # prevent empty Author
@@ -2791,18 +2815,7 @@ def edit_book(book_id):
             edited_books_id.add(book.id)
             book.author_sort = helper.get_sorted_author(input_authors[0])
 
-    if to_save["cover_url"] and os.path.splitext(to_save["cover_url"])[1].lower() == ".jpg":
-        img = requests.get(to_save["cover_url"])
-        if config.config_use_google_drive:
-            tmpDir = tempfile.gettempdir()
-            f = open(os.path.join(tmpDir, "uploaded_cover.jpg"), "wb")
-            f.write(img.content)
-            f.close()
-            gdriveutils.uploadFileToEbooksFolder(Gdrive.Instance().drive, os.path.join(book.path, 'cover.jpg'), os.path.join(tmpDir, f.name))
-        else:
-            f = open(os.path.join(config.config_calibre_dir, book.path, "cover.jpg"), "wb")
-            f.write(img.content)
-            f.close()
+    if to_save["cover_url"] and save_cover(to_save["cover_url"], book.path):
         book.has_cover = 1
 
     if book.series_index != to_save["series_index"]:
@@ -2954,6 +2967,25 @@ def edit_book(book_id):
                                      title=_(u"edit metadata"))
 
 
+def save_cover(url, book_path):
+    img = requests.get(url)
+    if img.headers.get('content-type') != 'image/jpeg':
+        return false
+
+    if config.config_use_google_drive:
+        tmpDir = tempfile.gettempdir()
+        f = open(os.path.join(tmpDir, "uploaded_cover.jpg"), "wb")
+        f.write(img.content)
+        f.close()
+        gdriveutils.uploadFileToEbooksFolder(Gdrive.Instance().drive, os.path.join(book_path, 'cover.jpg'), os.path.join(tmpDir, f.name))
+        return true
+
+    f = open(os.path.join(config.config_calibre_dir, book_path, "cover.jpg"), "wb")
+    f.write(img.content)
+    f.close()
+    return true
+
+
 @app.route("/upload", methods=["GET", "POST"])
 @login_required_if_no_ano
 @upload_required
@@ -2984,8 +3016,8 @@ def upload():
         tags = meta.tags
         series = meta.series
         series_index = meta.series_id
-        title_dir = helper.get_valid_filename(title, False)
-        author_dir = helper.get_valid_filename(author, False)
+        title_dir = helper.get_valid_filename(title)
+        author_dir = helper.get_valid_filename(author)
         data_name = title_dir
         filepath = config.config_calibre_dir + os.sep + author_dir + os.sep + title_dir
         saved_filename = filepath + os.sep + data_name + meta.extension.lower()
@@ -3086,5 +3118,11 @@ def upload():
 def start_gevent():
     from gevent.wsgi import WSGIServer
     global gevent_server
-    gevent_server = WSGIServer(('', ub.config.config_port), app)
-    gevent_server.serve_forever()
+    try:
+        gevent_server = WSGIServer(('', ub.config.config_port), app)
+        gevent_server.serve_forever()
+    except SocketError:
+        app.logger.info('Unable to listen on \'\', trying on IPv4 only...')
+        gevent_server = WSGIServer(('0.0.0.0', ub.config.config_port), app)
+        gevent_server.serve_forever()
+

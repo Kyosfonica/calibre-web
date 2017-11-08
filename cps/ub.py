@@ -6,6 +6,7 @@ from sqlalchemy import exc
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import *
 from flask_login import AnonymousUserMixin
+import sys
 import os
 import logging
 from werkzeug.security import generate_password_hash
@@ -50,7 +51,7 @@ DEVELOPMENT = False
 
 
 class UserBase:
-    @staticmethod
+    @property
     def is_authenticated(self):
         return True
 
@@ -96,11 +97,11 @@ class UserBase:
     def role_delete_books(self):
         return bool((self.role is not None)and(self.role & ROLE_DELETE_BOOKS == ROLE_DELETE_BOOKS))
 
-    @classmethod
+    @property
     def is_active(self):
         return True
 
-    @classmethod
+    @property
     def is_anonymous(self):
         return False
 
@@ -152,7 +153,7 @@ class User(UserBase, Base):
     role = Column(SmallInteger, default=ROLE_USER)
     password = Column(String)
     kindle_mail = Column(String(120), default="")
-    shelf = relationship('Shelf', backref='user', lazy='dynamic')
+    shelf = relationship('Shelf', backref='user', lazy='dynamic', order_by='Shelf.name')
     downloads = relationship('Downloads', backref='user', lazy='dynamic')
     locale = Column(String(2), default="en")
     sidebar_view = Column(Integer, default=1)
@@ -167,24 +168,31 @@ class Anonymous(AnonymousUserMixin, UserBase):
         self.loadSettings()
 
     def loadSettings(self):
-        data = session.query(User).filter(User.role.op('&')(ROLE_ANONYMOUS) == ROLE_ANONYMOUS).first()
+        data = session.query(User).filter(User.role.op('&')(ROLE_ANONYMOUS) == ROLE_ANONYMOUS).first()  # type: User
         settings = session.query(Settings).first()
         self.nickname = data.nickname
         self.role = data.role
+        self.id=data.id
         self.sidebar_view = data.sidebar_view
         self.default_language = data.default_language
         self.locale = data.locale
+        self.mature_content = data.mature_content
         self.anon_browse = settings.config_anonbrowse
 
     def role_admin(self):
         return False
 
+    @property
     def is_active(self):
         return False
 
+    @property
     def is_anonymous(self):
         return self.anon_browse
 
+    @property
+    def is_authenticated(self):
+        return False
 
 # Baseclass representing Shelfs in calibre-web inapp.db
 class Shelf(Base):
@@ -211,13 +219,24 @@ class BookShelf(Base):
     def __repr__(self):
         return '<Book %r>' % self.id
 
+
 class ReadBook(Base):
     __tablename__ = 'book_read_link'
 
-    id=Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True)
     book_id = Column(Integer, unique=False)
-    user_id =Column(Integer, ForeignKey('user.id'), unique=False)
+    user_id = Column(Integer, ForeignKey('user.id'), unique=False)
     is_read = Column(Boolean, unique=False)
+
+
+class Bookmark(Base):
+    __tablename__ = 'bookmark'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('user.id'))
+    book_id = Column(Integer)
+    format = Column(String(collation='NOCASE'))
+    bookmark_key = Column(String)
 
 
 # Baseclass representing Downloads from calibre-web in app.db
@@ -375,7 +394,11 @@ class Config:
                     (self.config_default_role & ROLE_DELETE_BOOKS == ROLE_DELETE_BOOKS))
 
     def mature_content_tags(self):
-        return list(map(unicode.lstrip, self.config_mature_content_tags.split(",")))
+        if (sys.version_info > (3, 0)): #Python3 str, Python2 unicode
+            lstrip = str.lstrip
+        else:
+            lstrip = unicode.lstrip
+        return list(map(lstrip, self.config_mature_content_tags.split(",")))
 
     def get_Log_Level(self):
         ret_value=""
@@ -395,7 +418,9 @@ class Config:
 # rows with SQL commands
 def migrate_Database():
     if not engine.dialect.has_table(engine.connect(), "book_read_link"):
-        ReadBook.__table__.create(bind = engine)
+        ReadBook.__table__.create(bind=engine)
+    if not engine.dialect.has_table(engine.connect(), "bookmark"):
+        Bookmark.__table__.create(bind=engine)
 
     try:
         session.query(exists().where(User.locale)).scalar()
