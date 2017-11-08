@@ -266,6 +266,7 @@ def get_valid_filename(value, replace_whitespace=True):
     """
     if value[-1:] == u'.':
         value = value[:-1]+u'_'
+    value = value.replace("/", "_").replace(":", "_").strip('\0')
     if use_unidecode:
         value=(unidecode.unidecode(value)).strip()
     else:
@@ -278,7 +279,7 @@ def get_valid_filename(value, replace_whitespace=True):
         else:
             value = unicode(re_slugify.sub('', value).strip())
     if replace_whitespace:
-        #*+:\"/<>? werden durch _ ersetzt
+        #*+:\"/<>? are replaced by _
         value = re.sub('[\*\+:\\\"/<>\?]+', u'_', value, flags=re.U)
 
     value = value[:128]
