@@ -289,14 +289,14 @@ def load_user_from_header(header_val):
         basic_password = header_val.split(':')[1]
     except TypeError:
         pass
-    user = ub.session.query(ub.User).filter(ub.User.nickname == basic_username).first()
+    user = ub.session.query(ub.User).filter(func.lower(ub.User.nickname) == basic_username.lower()).first()
     if user and check_password_hash(user.password, basic_password):
         return user
     return
 
 
 def check_auth(username, password):
-    user = ub.session.query(ub.User).filter(ub.User.nickname == username).first()
+    user = ub.session.query(ub.User).filter(func.lower(ub.User.nickname) == username.lower()).first()
     return bool(user and check_password_hash(user.password, password))
 
 
@@ -662,11 +662,13 @@ def feed_normal_search():
 
 def feed_search(term):
     if term:
-        entries = db.session.query(db.Books).filter(db.or_(db.Books.tags.any(db.Tags.name.like("%" + term + "%")),
-                                                    db.Books.series.any(db.Series.name.like("%" + term + "%")),
-                                                    db.Books.authors.any(db.Authors.name.like("%" + term + "%")),
-                                                    db.Books.publishers.any(db.Publishers.name.like("%" + term + "%")),
-                                                    db.Books.title.like("%" + term + "%")))\
+        term = term.strip().lower()
+        db.session.connection().connection.connection.create_function("lower", 1, db.lcase)
+        entries = db.session.query(db.Books).filter(db.or_(db.Books.tags.any(db.Tags.name.ilike("%" + term + "%")),
+                                                    db.Books.series.any(db.Series.name.ilike("%" + term + "%")),
+                                                    db.Books.authors.any(db.Authors.name.ilike("%" + term + "%")),
+                                                    db.Books.publishers.any(db.Publishers.name.ilike("%" + term + "%")),
+                                                    db.Books.title.ilike("%" + term + "%")))\
             .filter(common_filters()).all()
         entriescount = len(entries) if len(entries) > 0 else 1
         pagination = Pagination(1, entriescount, entriescount)
@@ -912,7 +914,7 @@ def get_authors_json():
     if request.method == "GET":
         query = request.args.get('q')
         # entries = db.session.execute("select name from authors where name like '%" + query + "%'")
-        entries = db.session.query(db.Authors).filter(db.Authors.name.like("%" + query + "%")).all()
+        entries = db.session.query(db.Authors).filter(db.Authors.name.ilike("%" + query + "%")).all()
         json_dumps = json.dumps([dict(name=r.name) for r in entries])
         return json_dumps
 
@@ -923,7 +925,7 @@ def get_tags_json():
     if request.method == "GET":
         query = request.args.get('q')
         # entries = db.session.execute("select name from tags where name like '%" + query + "%'")
-        entries = db.session.query(db.Tags).filter(db.Tags.name.like("%" + query + "%")).all()
+        entries = db.session.query(db.Tags).filter(db.Tags.iname.ilike("%" + query + "%")).all()
         # for x in entries:
         #    alfa = dict(name=x.name)
         json_dumps = json.dumps([dict(name=r.name) for r in entries])
@@ -1001,7 +1003,7 @@ def get_languages_json():
 def get_series_json():
     if request.method == "GET":
         query = request.args.get('q')
-        entries = db.session.query(db.Series).filter(db.Series.name.like("%" + query + "%")).all()
+        entries = db.session.query(db.Series).filter(db.Series.name.ilike("%" + query + "%")).all()
         # entries = db.session.execute("select name from series where name like '%" + query + "%'")
         json_dumps = json.dumps([dict(name=r.name) for r in entries])
         return json_dumps
@@ -1017,8 +1019,8 @@ def get_matching_tags():
         title_input = request.args.get('book_title')
         include_tag_inputs = request.args.getlist('include_tag')
         exclude_tag_inputs = request.args.getlist('exclude_tag')
-        q = q.filter(db.Books.authors.any(db.Authors.name.like("%" + author_input + "%")),
-                     db.Books.title.like("%" + title_input + "%"))
+        q = q.filter(db.Books.authors.any(db.Authors.name.ilike("%" + author_input + "%")),
+                     db.Books.title.ilike("%" + title_input + "%"))
         if len(include_tag_inputs) > 0:
             for tag in include_tag_inputs:
                 q = q.filter(db.Books.tags.any(db.Tags.id == tag))
@@ -1046,27 +1048,35 @@ def index(page):
 @app.route('/books/newest/page/<int:page>')
 @login_required_if_no_ano
 def newest_books(page):
-    entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.pubdate.desc())
-    return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
-                                 title=_(u"Newest Books"))
-
+    if current_cuser.show_sorted():
+        entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.pubdate.desc())
+        return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
+                                     title=_(u"Newest Books"))
+    else:
+        abort(404)
 
 @app.route('/books/oldest', defaults={'page': 1})
 @app.route('/books/oldest/page/<int:page>')
 @login_required_if_no_ano
 def oldest_books(page):
-    entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.pubdate)
-    return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
-                                 title=_(u"Oldest Books"))
+    if current_cuser.show_sorted():
+        entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.pubdate)
+        return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
+                                     title=_(u"Oldest Books"))
+    else:
+        abort(404)
 
 
 @app.route('/books/a-z', defaults={'page': 1})
 @app.route('/books/a-z/page/<int:page>')
 @login_required_if_no_ano
 def titles_ascending(page):
-    entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.sort)
-    return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
-                                 title=_(u"Books (A-Z)"))
+    if current_cuser.show_sorted():
+        entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.sort)
+        return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
+                                     title=_(u"Books (A-Z)"))
+    else:
+        abort(404)
 
 
 @app.route('/books/z-a', defaults={'page': 1})
@@ -1082,57 +1092,68 @@ def titles_descending(page):
 @app.route('/hot/page/<int:page>')
 @login_required_if_no_ano
 def hot_books(page):
-    if current_user.show_detail_random():
-        random = db.session.query(db.Books).filter(common_filters())\
-            .order_by(func.random()).limit(config.config_random_books)
-    else:
-        random = false
-    off = int(int(config.config_books_per_page) * (page - 1))
-    all_books = ub.session.query(ub.Downloads, ub.func.count(ub.Downloads.book_id)).order_by(
-        ub.func.count(ub.Downloads.book_id).desc()).group_by(ub.Downloads.book_id)
-    hot_books = all_books.offset(off).limit(config.config_books_per_page)
-    entries = list()
-    for book in hot_books:
-        downloadBook = db.session.query(db.Books).filter(common_filters()).filter(db.Books.id == book.Downloads.book_id).first()
-        if downloadBook:
-            entries.append(downloadBook)
+    if current_user.show_hot_books():
+        if current_user.show_detail_random():
+            random = db.session.query(db.Books).filter(common_filters())\
+                .order_by(func.random()).limit(config.config_random_books)
         else:
-            ub.session.query(ub.Downloads).filter(book.Downloads.book_id == ub.Downloads.book_id).delete()
-            ub.session.commit()
-    numBooks = entries.__len__()
-    pagination = Pagination(page, config.config_books_per_page, numBooks)
-    return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
-                                 title=_(u"Hot Books (most downloaded)"))
+            random = false
+        off = int(int(config.config_books_per_page) * (page - 1))
+        all_books = ub.session.query(ub.Downloads, ub.func.count(ub.Downloads.book_id)).order_by(
+            ub.func.count(ub.Downloads.book_id).desc()).group_by(ub.Downloads.book_id)
+        hot_books = all_books.offset(off).limit(config.config_books_per_page)
+        entries = list()
+        for book in hot_books:
+            downloadBook = db.session.query(db.Books).filter(common_filters()).filter(db.Books.id == book.Downloads.book_id).first()
+            if downloadBook:
+                entries.append(downloadBook)
+            else:
+                ub.session.query(ub.Downloads).filter(book.Downloads.book_id == ub.Downloads.book_id).delete()
+                ub.session.commit()
+        numBooks = entries.__len__()
+        pagination = Pagination(page, config.config_books_per_page, numBooks)
+        return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
+                                     title=_(u"Hot Books (most downloaded)"))
+    else:
+       abort(404)
 
 
 @app.route("/rated", defaults={'page': 1})
 @app.route('/rated/page/<int:page>')
 @login_required_if_no_ano
 def best_rated_books(page):
-    entries, random, pagination = fill_indexpage(page, db.Books, db.Books.ratings.any(db.Ratings.rating > 9),
-                                                 db.Books.timestamp.desc())
-    return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
-                                 title=_(u"Best rated books"))
+    if current_user.show_best_rated_books():
+        entries, random, pagination = fill_indexpage(page, db.Books, db.Books.ratings.any(db.Ratings.rating > 9),
+                                                     db.Books.timestamp.desc())
+        return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
+                                     title=_(u"Best rated books"))
+    abort(404)
 
 
 @app.route("/discover", defaults={'page': 1})
 @app.route('/discover/page/<int:page>')
 @login_required_if_no_ano
 def discover(page):
-    entries, __, pagination = fill_indexpage(page, db.Books, True, func.randomblob(2))
-    pagination = Pagination(1, config.config_books_per_page,config.config_books_per_page)
-    return render_title_template('discover.html', entries=entries, pagination=pagination, title=_(u"Random Books"))
+    if current_user.show_random_books():
+        entries, __, pagination = fill_indexpage(page, db.Books, True, func.randomblob(2))
+        pagination = Pagination(1, config.config_books_per_page,config.config_books_per_page)
+        return render_title_template('discover.html', entries=entries, pagination=pagination, title=_(u"Random Books"))
+    else:
+        abort(404)
 
 
 @app.route("/author")
 @login_required_if_no_ano
 def author_list():
-    entries = db.session.query(db.Authors, func.count('books_authors_link.book').label('count'))\
-        .join(db.books_authors_link).join(db.Books).filter(common_filters())\
-        .group_by('books_authors_link.author').order_by(db.Authors.sort).all()
-    for entry in entries:
-        entry.Authors.name=entry.Authors.name.replace('|',',')
-    return render_title_template('list.html', entries=entries, folder='author', title=_(u"Author list"))
+    if current_user.show_author():
+        entries = db.session.query(db.Authors, func.count('books_authors_link.book').label('count'))\
+            .join(db.books_authors_link).join(db.Books).filter(common_filters())\
+            .group_by('books_authors_link.author').order_by(db.Authors.sort).all()
+        for entry in entries:
+            entry.Authors.name=entry.Authors.name.replace('|',',')
+        return render_title_template('list.html', entries=entries, folder='author', title=_(u"Author list"))
+    else:
+        abort(404)
 
 
 @app.route("/author/<int:book_id>", defaults={'page': 1})
@@ -1181,10 +1202,13 @@ def get_unique_other_books(library_books, author_books):
 @app.route("/series")
 @login_required_if_no_ano
 def series_list():
-    entries = db.session.query(db.Series, func.count('books_series_link.book').label('count'))\
-        .join(db.books_series_link).join(db.Books).filter(common_filters())\
-        .group_by('books_series_link.series').order_by(db.Series.sort).all()
-    return render_title_template('list.html', entries=entries, folder='series', title=_(u"Series list"))
+    if current_user.show_series():
+        entries = db.session.query(db.Series, func.count('books_series_link.book').label('count'))\
+            .join(db.books_series_link).join(db.Books).filter(common_filters())\
+            .group_by('books_series_link.series').order_by(db.Series.sort).all()
+        return render_title_template('list.html', entries=entries, folder='series', title=_(u"Series list"))
+    else:
+        abort(404)
 
 
 @app.route("/series/<int:book_id>/", defaults={'page': 1})
@@ -1205,30 +1229,33 @@ def series(book_id, page):
 @app.route("/language")
 @login_required_if_no_ano
 def language_overview():
-    if current_user.filter_language() == u"all":
-        languages = db.session.query(db.Languages).all()
-        for lang in languages:
-            try:
-                cur_l = LC.parse(lang.lang_code)
-                lang.name = cur_l.get_language_name(get_locale())
-            except Exception:
-                lang.name = _(isoLanguages.get(part3=lang.lang_code).name)
-    else:
-        try:
-            cur_l = LC.parse(current_user.filter_language())
-        except Exception:
-            cur_l = None
-        languages = db.session.query(db.Languages).filter(
-            db.Languages.lang_code == current_user.filter_language()).all()
-        if cur_l:
-            languages[0].name = cur_l.get_language_name(get_locale())
+    if current_user.show_language():
+        if current_user.filter_language() == u"all":
+            languages = db.session.query(db.Languages).all()
+            for lang in languages:
+                try:
+                    cur_l = LC.parse(lang.lang_code)
+                    lang.name = cur_l.get_language_name(get_locale())
+                except Exception:
+                    lang.name = _(isoLanguages.get(part3=lang.lang_code).name)
         else:
-            languages[0].name = _(isoLanguages.get(part3=languages[0].lang_code).name)
-    lang_counter = db.session.query(db.books_languages_link,
-                                    func.count('books_languages_link.book').label('bookcount')).group_by(
-        'books_languages_link.lang_code').all()
-    return render_title_template('languages.html', languages=languages, lang_counter=lang_counter,
-                                 title=_(u"Available languages"))
+            try:
+                cur_l = LC.parse(current_user.filter_language())
+            except Exception:
+                cur_l = None
+            languages = db.session.query(db.Languages).filter(
+                db.Languages.lang_code == current_user.filter_language()).all()
+            if cur_l:
+                languages[0].name = cur_l.get_language_name(get_locale())
+            else:
+                languages[0].name = _(isoLanguages.get(part3=languages[0].lang_code).name)
+        lang_counter = db.session.query(db.books_languages_link,
+                                        func.count('books_languages_link.book').label('bookcount')).group_by(
+            'books_languages_link.lang_code').all()
+        return render_title_template('languages.html', languages=languages, lang_counter=lang_counter,
+                                     title=_(u"Available languages"))
+    else:
+        abort(404)
 
 
 @app.route("/language/<name>", defaults={'page': 1})
@@ -1249,10 +1276,13 @@ def language(name, page):
 @app.route("/category")
 @login_required_if_no_ano
 def category_list():
-    entries = db.session.query(db.Tags, func.count('books_tags_link.book').label('count'))\
-        .join(db.books_tags_link).join(db.Books).order_by(db.Tags.name).filter(common_filters())\
-        .group_by('books_tags_link.tag').all()
-    return render_title_template('list.html', entries=entries, folder='category', title=_(u"Category list"))
+    if current_user.show_category():
+        entries = db.session.query(db.Tags, func.count('books_tags_link.book').label('count'))\
+            .join(db.books_tags_link).join(db.Books).order_by(db.Tags.name).filter(common_filters())\
+            .group_by('books_tags_link.tag').all()
+        return render_title_template('list.html', entries=entries, folder='category', title=_(u"Category list"))
+    else:
+        abort(404)
 
 
 @app.route("/category/<int:book_id>", defaults={'page': 1})
@@ -1440,8 +1470,8 @@ def delete_book(book_id):
             db.session.query(db.Books).filter(db.Books.id == book_id).delete()
             db.session.commit()
         else:
-            # book not found
-            app.logger.info('Book with id "'+book_id+'" could not be deleted')
+            # book not foundß
+            app.logger.info('Book with id "'+str(book_id)+'" could not be deleted')
     return redirect(url_for('index'))
 
 @app.route("/gdrive/authenticate")
@@ -1579,14 +1609,20 @@ def update():
 @app.route("/search", methods=["GET"])
 @login_required_if_no_ano
 def search():
-    term = request.args.get("query").strip()
+    term = request.args.get("query").strip().lower()
+
     if term:
-        entries = db.session.query(db.Books).filter(db.or_(db.Books.tags.any(db.Tags.name.like("%" + term + "%")),
-                                                    db.Books.series.any(db.Series.name.like("%" + term + "%")),
-                                                    db.Books.authors.any(db.Authors.name.like("%" + term + "%")),
-                                                    db.Books.publishers.any(db.Publishers.name.like("%" + term + "%")),
-                                                    db.Books.title.like("%" + term + "%")))\
+        db.session.connection().connection.connection.create_function("lower", 1, db.lcase)
+        entries = db.session.query(db.Books).filter(db.or_(db.Books.tags.any(db.Tags.name.ilike("%" + term + "%")),
+                                                    db.Books.series.any(db.Series.name.ilike("%" + term + "%")),
+                                                    db.Books.authors.any(db.Authors.name.ilike("%" + term + "%")),
+                                                    db.Books.publishers.any(db.Publishers.name.ilike("%" + term + "%")),
+                                                    db.Books.title.ilike("%" + term + "%")))\
             .filter(common_filters()).all()
+#        entries = db.session.query(db.Books).with_entities(db.Books.title).filter(db.Books.title.ilike("%" + term + "%")).all()
+        #result = db.session.execute("select name from authors where lower(name) like '%" + term.lower() + "%'")
+        #entries = result.fetchall()
+        #result.close()
         return render_title_template('search.html', searchterm=term, entries=entries)
     else:
         return render_title_template('search.html', searchterm="")
@@ -1596,6 +1632,7 @@ def search():
 @login_required_if_no_ano
 def advanced_search():
     if request.method == 'GET':
+        db.session.connection().connection.connection.create_function("lower", 1, db.lcase)
         q = db.session.query(db.Books)
         include_tag_inputs = request.args.getlist('include_tag')
         exclude_tag_inputs = request.args.getlist('exclude_tag')
@@ -1607,9 +1644,9 @@ def advanced_search():
         author_name = request.args.get("author_name")
         book_title = request.args.get("book_title")
         publisher = request.args.get("publisher")
-        if author_name: author_name = author_name.strip()
-        if book_title: book_title = book_title.strip()
-        if publisher: publisher = publisher.strip()
+        if author_name: author_name = author_name.strip().lower()
+        if book_title: book_title = book_title.strip().lower()
+        if publisher: publisher = publisher.strip().lower()
         if include_tag_inputs or exclude_tag_inputs or include_series_inputs or exclude_series_inputs or \
                 include_languages_inputs or exclude_languages_inputs or author_name or book_title or publisher:
             searchterm = []
@@ -1628,9 +1665,9 @@ def advanced_search():
                     lang.name = _(isoLanguages.get(part3=lang.lang_code).name)
             searchterm.extend(language.name for language in language_names)
             searchterm = " + ".join(filter(None, searchterm))
-            q = q.filter(db.Books.authors.any(db.Authors.name.like("%" + author_name + "%")),
-                         db.Books.title.like("%" + book_title + "%"),
-                         db.Books.publishers.any(db.Publishers.name.like("%" + publisher + "%")))
+            q = q.filter(db.Books.authors.any(db.Authors.name.ilike("%" + author_name + "%")),
+                         db.Books.title.ilike("%" + book_title + "%"),
+                         db.Books.publishers.any(db.Publishers.name.ilike("%" + publisher + "%")))
             for tag in include_tag_inputs:
                 q = q.filter(db.Books.tags.any(db.Tags.id == tag))
             for tag in exclude_tag_inputs:
@@ -1888,7 +1925,7 @@ def register():
             flash(_(u"Please fill out all fields!"), category="error")
             return render_title_template('register.html', title=_(u"register"))
 
-        existing_user = ub.session.query(ub.User).filter(ub.User.nickname == to_save["nickname"]).first()
+        existing_user = ub.session.query(ub.User).filter(func.lower(ub.User.nickname) == to_save["nickname"].lower()).first()
         existing_email = ub.session.query(ub.User).filter(ub.User.email == to_save["email"]).first()
         if not existing_user and not existing_email:
             content = ub.User()
@@ -1920,7 +1957,7 @@ def login():
         return redirect(url_for('index'))
     if request.method == "POST":
         form = request.form.to_dict()
-        user = ub.session.query(ub.User).filter(ub.User.nickname == form['username'].strip()).first()
+        user = ub.session.query(ub.User).filter(func.lower(ub.User.nickname) == form['username'].strip().lower()).first()
 
         if user and check_password_hash(user.password, form['password']):
             login_user(user, remember=True)
@@ -2104,8 +2141,10 @@ def remove_from_shelf(shelf_id, book_id):
             return redirect(url_for('index'))
         return "Invalid shelf specified", 400
 
-    if not shelf.is_public and not shelf.user_id == int(current_user.id) \
-            or (shelf.is_public and current_user.role_edit_shelfs()):
+    # if shelf is public and use is allowed to edit shelfs, or if shelf is private and user is owner
+    # allow editing shelfs
+    if (not shelf.is_public and not shelf.user_id == int(current_user.id)) \
+            or not (shelf.is_public and current_user.role_edit_shelfs()):
         if not request.is_xhr:
             app.logger.info("Sorry you are not allowed to remove a book from this shelf: %s" % shelf.name)
             return redirect(url_for('index'))
@@ -2307,6 +2346,10 @@ def profile():
             content.sidebar_view += ub.SIDEBAR_SERIES
         if "show_category" in to_save:
             content.sidebar_view += ub.SIDEBAR_CATEGORY
+        if "show_recent" in to_save:
+            content.sidebar_view += ub.SIDEBAR_RECENT
+        if "show_sorted" in to_save:
+            content.sidebar_view += ub.SIDEBAR_SORTED
         if "show_hot" in to_save:
             content.sidebar_view += ub.SIDEBAR_HOT
         if "show_best_rated" in to_save:
@@ -2688,6 +2731,16 @@ def edit_user(user_id):
                 content.sidebar_view += ub.SIDEBAR_CATEGORY
             elif "show_category" not in to_save and content.show_category():
                 content.sidebar_view -= ub.SIDEBAR_CATEGORY
+
+            if "show_recent" in to_save and not content.show_recent():
+                content.sidebar_view += ub.SIDEBAR_RECENT
+            elif "show_recent" not in to_save and content.show_recent():
+                content.sidebar_view -= ub.SIDEBAR_RECENT
+
+            if "show_sorted" in to_save and not content.show_sorted():
+                content.sidebar_view += ub.SIDEBAR_SORTED
+            elif "show_sorted" not in to_save and content.show_sorted():
+                content.sidebar_view -= ub.SIDEBAR_SORTED
 
             if "show_hot" in to_save and not content.show_hot_books():
                 content.sidebar_view += ub.SIDEBAR_HOT
