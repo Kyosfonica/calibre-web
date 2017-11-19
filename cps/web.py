@@ -1048,7 +1048,7 @@ def index(page):
 @app.route('/books/newest/page/<int:page>')
 @login_required_if_no_ano
 def newest_books(page):
-    if current_cuser.show_sorted():
+    if current_user.show_sorted():
         entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.pubdate.desc())
         return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
                                      title=_(u"Newest Books"))
@@ -1059,7 +1059,7 @@ def newest_books(page):
 @app.route('/books/oldest/page/<int:page>')
 @login_required_if_no_ano
 def oldest_books(page):
-    if current_cuser.show_sorted():
+    if current_user.show_sorted():
         entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.pubdate)
         return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
                                      title=_(u"Oldest Books"))
@@ -1071,7 +1071,7 @@ def oldest_books(page):
 @app.route('/books/a-z/page/<int:page>')
 @login_required_if_no_ano
 def titles_ascending(page):
-    if current_cuser.show_sorted():
+    if current_user.show_sorted():
         entries, random, pagination = fill_indexpage(page, db.Books, True, db.Books.sort)
         return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
                                      title=_(u"Books (A-Z)"))
@@ -1757,20 +1757,15 @@ def feed_get_cover(book_id):
 
 
 def render_read_books(page, are_read, as_xml=False):
-    if not current_user.is_anonymous:
-        readBooks = ub.session.query(ub.ReadBook).filter(ub.ReadBook.user_id == int(current_user.id)).filter(ub.ReadBook.is_read == True).all()
-        readBookIds = [x.book_id for x in readBooks]
-        if are_read:
-            db_filter = db.Books.id.in_(readBookIds)
-        else:
-            db_filter = ~db.Books.id.in_(readBookIds)
-
-        entries, random, pagination = fill_indexpage(page, db.Books,
-            db_filter, db.Books.timestamp.desc())
+    readBooks = ub.session.query(ub.ReadBook).filter(ub.ReadBook.user_id == int(current_user.id)).filter(ub.ReadBook.is_read == True).all()
+    readBookIds = [x.book_id for x in readBooks]
+    if are_read:
+        db_filter = db.Books.id.in_(readBookIds)
     else:
-        entries = []
-        random = False
-        pagination = Pagination(page, 1, 0)
+        db_filter = ~db.Books.id.in_(readBookIds)
+
+    entries, random, pagination = fill_indexpage(page, db.Books,
+        db_filter, db.Books.timestamp.desc())
 
     if as_xml:
         xml = render_title_template('feed.xml', entries=entries, pagination=pagination)
