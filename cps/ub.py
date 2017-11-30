@@ -47,10 +47,7 @@ DEFAULT_PASS = "admin123"
 DEFAULT_PORT = int(os.environ.get("CALIBRE_PORT", 8083))
 
 
-
 DEVELOPMENT = False
-
-
 
 
 class UserBase:
@@ -203,6 +200,7 @@ class Anonymous(AnonymousUserMixin, UserBase):
     def is_authenticated(self):
         return False
 
+
 # Baseclass representing Shelfs in calibre-web inapp.db
 class Shelf(Base):
     __tablename__ = 'shelf'
@@ -283,6 +281,7 @@ class Settings(Base):
     config_anonbrowse = Column(SmallInteger, default=0)
     config_public_reg = Column(SmallInteger, default=0)
     config_default_role = Column(SmallInteger, default=0)
+    config_default_show = Column(SmallInteger, default=2047)
     config_columns_to_ignore = Column(String)
     config_use_google_drive = Column(Boolean)
     config_google_drive_client_id = Column(String)
@@ -290,7 +289,6 @@ class Settings(Base):
     config_google_drive_folder = Column(String)
     config_google_drive_calibre_url_base = Column(String)
     config_google_drive_watch_changes_response = Column(String)
-    config_columns_to_ignore = Column(String)
     config_remote_login = Column(Boolean)
     config_use_goodreads = Column(Boolean)
     config_goodreads_api_key = Column(String)
@@ -339,6 +337,7 @@ class Config:
         self.config_anonbrowse = data.config_anonbrowse
         self.config_public_reg = data.config_public_reg
         self.config_default_role = data.config_default_role
+        self.config_default_show = data.config_default_show
         self.config_columns_to_ignore = data.config_columns_to_ignore
         self.config_use_google_drive = data.config_use_google_drive
         self.config_google_drive_client_id = data.config_google_drive_client_id
@@ -402,23 +401,67 @@ class Config:
         return bool((self.config_default_role is not None) and
                     (self.config_default_role & ROLE_DELETE_BOOKS == ROLE_DELETE_BOOKS))
 
+    def show_detail_random(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & DETAIL_RANDOM == DETAIL_RANDOM))
+
+    def show_language(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_LANGUAGE == SIDEBAR_LANGUAGE))
+
+    def show_series(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_SERIES == SIDEBAR_SERIES))
+
+    def show_category(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_CATEGORY == SIDEBAR_CATEGORY))
+
+    def show_hot_books(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_HOT == SIDEBAR_HOT))
+
+    def show_random_books(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_RANDOM == SIDEBAR_RANDOM))
+
+    def show_author(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_AUTHOR == SIDEBAR_AUTHOR))
+
+    def show_best_rated_books(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_BEST_RATED == SIDEBAR_BEST_RATED))
+
+    def show_read_and_unread(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_READ_AND_UNREAD == SIDEBAR_READ_AND_UNREAD))
+
+    def show_recent(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_RECENT == SIDEBAR_RECENT))
+
+    def show_sorted(self):
+        return bool((self.config_default_show is not None) and
+                    (self.config_default_show & SIDEBAR_SORTED == SIDEBAR_SORTED))
+
     def mature_content_tags(self):
-        if (sys.version_info > (3, 0)): #Python3 str, Python2 unicode
+        if sys.version_info > (3, 0): # Python3 str, Python2 unicode
             lstrip = str.lstrip
         else:
             lstrip = unicode.lstrip
         return list(map(lstrip, self.config_mature_content_tags.split(",")))
 
     def get_Log_Level(self):
-        ret_value=""
+        ret_value = ""
         if self.config_log_level == logging.INFO:
-            ret_value='INFO'
+            ret_value = 'INFO'
         elif self.config_log_level == logging.DEBUG:
-            ret_value='DEBUG'
+            ret_value = 'DEBUG'
         elif self.config_log_level == logging.WARNING:
-            ret_value='WARNING'
+            ret_value = 'WARNING'
         elif self.config_log_level == logging.ERROR:
-            ret_value='ERROR'
+            ret_value = 'ERROR'
         return ret_value
 
 
@@ -495,7 +538,7 @@ def migrate_Database():
         conn = engine.connect()
         conn.execute("ALTER TABLE user ADD column `sidebar_view` Integer DEFAULT 1")
         session.commit()
-        create=True
+        create = True
     try:
         if create:
             conn = engine.connect()
@@ -534,11 +577,20 @@ def migrate_Database():
     except exc.OperationalError:
         conn = engine.connect()
         conn.execute("ALTER TABLE Settings ADD column `config_mature_content_tags` String DEFAULT ''")
+    try:
+        session.query(exists().where(Settings.config_default_show)).scalar()
+        session.commit()
+    except exc.OperationalError:  # Database is not compatible, some rows are missing
+        conn = engine.connect()
+        conn.execute("ALTER TABLE Settings ADD column `config_default_show` SmallInteger DEFAULT 2047")
+        session.commit()
+
 
 def clean_database():
     # Remove expired remote login tokens
     now = datetime.datetime.now()
     session.query(RemoteAuthToken).filter(now > RemoteAuthToken.expiration).delete()
+
 
 def create_default_config():
     settings = Settings()
