@@ -56,7 +56,7 @@ from werkzeug.datastructures import Headers
 from babel import Locale as LC
 from babel import negotiate_locale
 from babel import __version__ as babelVersion
-from babel.dates import format_date
+from babel.dates import format_date, format_datetime
 from functools import wraps
 import base64
 from sqlalchemy.sql import *
@@ -222,7 +222,7 @@ gevent_server = None
 
 formatter = logging.Formatter(
     "[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s")
-file_handler = RotatingFileHandler(os.path.join(config.get_main_dir, "calibre-web.log"), maxBytes=50000, backupCount=2)
+file_handler = RotatingFileHandler(config.get_config_logfile(), maxBytes=50000, backupCount=2)
 file_handler.setFormatter(formatter)
 app.logger.addHandler(file_handler)
 app.logger.setLevel(config.config_log_level)
@@ -429,7 +429,7 @@ def mimetype_filter(val):
 
 
 @app.template_filter('formatdate')
-def formatdate(val):
+def formatdate_filter(val):
     conformed_timestamp = re.sub(r"[:]|([-](?!((\d{2}[:]\d{2})|(\d{4}))$))", '', val)
     formatdate = datetime.datetime.strptime(conformed_timestamp[:15], "%Y%m%d %H%M%S")
     return format_date(formatdate, format='medium', locale=get_locale())
@@ -840,6 +840,55 @@ def feed_series(book_id):
     return response
 
 
+@app.route("/opds/shelfindex/", defaults={'public': 0})
+@app.route("/opds/shelfindex/<string:public>")
+@requires_basic_auth_if_no_ano
+def feed_shelfindex(public):
+    off = request.args.get("offset")
+    if not off:
+        off = 0
+    if public is not 0:
+        shelf = g.public_shelfes
+        number = len(shelf)
+    else:
+        shelf = g.user.shelf
+        number = shelf.count()
+    pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
+                            number)
+    xml = render_title_template('feed.xml', listelements=shelf, folder='feed_shelf', pagination=pagination)
+    response = make_response(xml)
+    response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
+    return response
+
+
+@app.route("/opds/shelf/<int:book_id>")
+@requires_basic_auth_if_no_ano
+def feed_shelf(book_id):
+    off = request.args.get("offset")
+    if not off:
+        off = 0
+    if current_user.is_anonymous:
+        shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.is_public == 1, ub.Shelf.id == book_id).first()
+    else:
+        shelf = ub.session.query(ub.Shelf).filter(ub.or_(ub.and_(ub.Shelf.user_id == int(current_user.id),
+                                                                 ub.Shelf.id == book_id),
+                                                         ub.and_(ub.Shelf.is_public == 1,
+                                                                 ub.Shelf.id == book_id))).first()
+    result = list()
+    # user is allowed to access shelf
+    if shelf:
+        books_in_shelf = ub.session.query(ub.BookShelf).filter(ub.BookShelf.shelf == book_id).order_by(
+            ub.BookShelf.order.asc()).all()
+        for book in books_in_shelf:
+            cur_book = db.session.query(db.Books).filter(db.Books.id == book.book_id).first()
+            result.append(cur_book)
+        pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
+                                len(result))
+        xml = render_title_template('feed.xml', entries=result, pagination=pagination)
+        response = make_response(xml)
+        response.headers["Content-Type"] = "application/atom+xml; charset=utf-8"
+        return response
+
 def partial(total_byte_len, part_size_limit):
     s = []
     for p in range(0, total_byte_len, part_size_limit):
@@ -947,7 +996,8 @@ def get_update_status():
             status['status'] = True
             commitdate = requests.get('https://api.github.com/repos/janeczku/calibre-web/git/commits/'+commit['object']['sha']).json()
             if "committer" in commitdate:
-                status['commit'] = commitdate['committer']['date']
+                form_date=datetime.datetime.strptime(commitdate['committer']['date'],"%Y-%m-%dT%H:%M:%SZ")
+                status['commit'] = format_datetime(form_date, format='short', locale=get_locale())
             else:
                 status['commit'] = u'Unknown'
         else:
@@ -2381,6 +2431,17 @@ def profile():
 @admin_required
 def admin():
     commit = '$Format:%cI$'
+    if commit.startswith("$"):
+        commit = _(u'Unknown')
+    else:
+        form_date = datetime.datetime.strptime(commit[:19], "%Y-%m-%dT%H:%M:%S")
+        if len(commit) > 19:    # check if string has timezone
+            if commit[19] == '+':
+                form_date -= datetime.timedelta(hours=int(commit[20:22]), minutes=int(commit[23:]))
+            elif commit[19] == '-':
+                form_date += datetime.timedelta(hours=int(commit[20:22]), minutes=int(commit[23:]))
+        commit = format_datetime(form_date, format='short', locale=get_locale())
+
     content = ub.session.query(ub.User).all()
     settings = ub.session.query(ub.Settings).first()
     return render_title_template("admin.html", content=content, email=settings, config=config, commit=commit,
@@ -2524,7 +2585,20 @@ def configuration_helper(origin):
             content.config_default_show = content.config_default_show + ub.SIDEBAR_RECENT
         if "show_sorted" in to_save:
             content.config_default_show = content.config_default_show + ub.SIDEBAR_SORTED
-
+        if content.config_logfile != to_save["config_logfile"]:
+            # check valid path, only path or file
+            if os.path.dirname(to_save["config_logfile"]):
+                if os.path.exists(os.path.dirname(to_save["config_log_level"])):
+                    content.config_logfile = to_save["config_logfile"]
+                else:
+                    ub.session.commit()
+                    flash(_(u'Logfile location is not valid, please enter correct path'), category="error")
+                    return render_title_template("config_edit.html", content=config, origin=origin,
+                                                 gdrive=gdrive_support,
+                                                 goodreads=goodreads_support, title=_(u"Basic Configuration"))
+            else:
+                content.config_logfile = to_save["config_logfile"]
+            reboot_required = True
         try:
             if content.config_use_google_drive and is_gdrive_ready() and not os.path.exists(config.config_calibre_dir + "/metadata.db"):
                 gdriveutils.downloadFile(Gdrive.Instance().drive, None, "metadata.db", config.config_calibre_dir + "/metadata.db")
@@ -2882,7 +2956,7 @@ def edit_book(book_id):
         edited_books_id.add(book.id)
 
     input_authors = to_save["author_name"].split('&')
-    input_authors = map(lambda it: it.strip().replace(',', '|'), input_authors)
+    input_authors = list(map(lambda it: it.strip().replace(',', '|'), input_authors))
     # we have all author names now
     if input_authors == ['']:
         input_authors = [_(u'unknown')]  # prevent empty Author
@@ -2920,7 +2994,7 @@ def edit_book(book_id):
             book.comments.append(db.Comments(text=to_save["description"], book=book.id))
 
         input_tags = to_save["tags"].split(',')
-        input_tags = map(lambda it: it.strip(), input_tags)
+        input_tags = list(map(lambda it: it.strip(), input_tags))
         modify_database_object(input_tags, book.tags, db.Tags, db.session, 'tags')
 
         input_series = [to_save["series"].strip()]
@@ -2928,7 +3002,7 @@ def edit_book(book_id):
         modify_database_object(input_series, book.series, db.Series, db.session, 'series')
 
         input_languages = to_save["languages"].split(',')
-        input_languages = map(lambda it: it.strip().lower(), input_languages)
+        input_languages = list(map(lambda it: it.strip().lower(), input_languages))
 
         if to_save["pubdate"]:
             try:
@@ -3040,7 +3114,7 @@ def edit_book(book_id):
                             db.session.delete(del_cc)
             else:
                 input_tags = to_save[cc_string].split(',')
-                input_tags = map(lambda it: it.strip(), input_tags)
+                input_tags = list(map(lambda it: it.strip(), input_tags))
                 modify_database_object(input_tags, getattr(book, cc_string), db.cc_classes[c.id], db.session, 'custom')
         db.session.commit()
         author_names = []
@@ -3185,7 +3259,7 @@ def upload():
         db.session.commit()
 
         input_tags = tags.split(',')
-        input_tags = map(lambda it: it.strip(), input_tags)
+        input_tags = list(map(lambda it: it.strip(), input_tags))
         modify_database_object(input_tags, db_book.tags, db.Tags, db.session, 'tags')
 
         if db_language is not None:  # display Full name instead of iso639.part3
