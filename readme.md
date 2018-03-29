@@ -12,7 +12,7 @@ Calibre Web is a web app providing a clean interface for browsing, reading and d
 - full graphical setup
 - User management with fine grained per-user permissions
 - Admin interface
-- User Interface in dutch, english, french, german, italian, polish, russian, simplified chinese, spanish
+- User Interface in dutch, english, french, german, italian, japanese, polish, russian, simplified chinese, spanish
 - OPDS feed for eBook reader apps 
 - Filter and search by titles, authors, tags, series and language
 - Create custom book collection (shelves)
@@ -46,7 +46,7 @@ Calibre Web is a web app providing a clean interface for browsing, reading and d
 The configuration can be changed as admin in the admin panel under "Configuration"
 
 Server Port:
-Changes the port calibre-web is listening, changes take effect after pressing submit button
+Changes the port Calibre-Web is listening, changes take effect after pressing submit button
 
 Enable public registration:    
 Tick to enable public user registration.
@@ -70,7 +70,7 @@ Optionally, to enable on-the-fly conversion from EPUB to MOBI when using the sen
 
 ## Using Google Drive integration
 
-Additional optional dependencys are necessary to get this work. Please install all optional  requirements by executing `pip install --target vendor -r optional-requirements.txt`
+Calibre Calibre library (metadata.db) can be located on a Google Drive. Additional optional dependencys are necessary to get this work. Please install all optional  requirements by executing `pip install --target vendor -r optional-requirements.txt`
 
 To use google drive integration, you have to use the google developer console to create a new app. https://console.developers.google.com
 
@@ -82,9 +82,10 @@ Once a project has been created, we need to create a client ID and a client secr
 4. Click Create Credentials and OAuth Client ID
 5. Select Web Application and then next
 6. Give the Credentials a name and enter your callback, which will be CALIBRE_WEB_URL/gdrive/callback
-7. Finally click save
+7. Click save
+8. Download json file and place it in `calibre-web/cps` directory, with the name `client_secrets.json`  
 
-The Drive API should now be setup and ready to use, so we need to integrate it into Calibre Web. This is done as below: -
+The Drive API should now be setup and ready to use, so we need to integrate it into Calibre-Web. This is done as below: -
 
 1. Open config page
 2. Enter the location that will be used to store the metadata.db file, and to temporary store uploaded books and other temporary files for upload
@@ -92,15 +93,17 @@ The Drive API should now be setup and ready to use, so we need to integrate it i
 3. Enter Client Secret and Client Key as provided via previous steps
 4. Enter the folder that is the root of your calibre library
 5. Enter base URL for calibre (used for google callbacks)
-6 Now select Authenticate Google Drive
-7. This should redirect you to google to allow it top use your Drive, and then redirect you back to the config page
-8. Google Drive should now be connected and be used to get images and download Epubs. The metadata.db is stored in the calibre library location
+6. Click the "Submit" button
+7. Come back to the configuration form
+8. Now select Authenticate Google Drive
+9. This should redirect you to google to allow it top use your Drive, and then redirect you back to the config page
+10. Google Drive should now be connected and be used to get images and download Epubs. The metadata.db is stored in the calibre library location
 
 ### Optional
 If your calibre web is using https, it is possible to add a "watch" to the drive. This will inform us if the metadata.db file is updated and allow us to update our calibre library accordingly.
 
-9. Click enable watch of metadata.db
-10. Note that this expires after a week, so will need to be manually refresh 
+11. Click enable watch of metadata.db
+12. Note that this expires after a week, so will need to be manually refresh 
 
 ## Docker image
 
@@ -108,7 +111,7 @@ Calibre Web can be run as Docker container. Pre-built Docker images based on Alp
 
 ## Reverse Proxy
 
-Reverse proxy configuration examples for apache and nginx to use calibre-web:
+Reverse proxy configuration examples for apache and nginx to use Calibre-Web:
 
 nginx configuration for a local server listening on port 8080, mapping calibre web to /calibre:
 
@@ -152,12 +155,12 @@ Listen 443
 </VirtualHost>
 ```
 
-## Start calibre-web as service under Linux
+## Start Calibre-Web as service under Linux
 
 Create a file "cps.service" as root in the folder /etc/systemd/system with the following content:
 
 ```[Unit]
-Description=Calibre-web
+Description=Calibre-Web
 
 [Service]
 Type=simple
@@ -173,3 +176,12 @@ Replace the user and ExecStart with your user and foldernames.
 `sudo systemctl enable cps.service`
 
 enables the service.
+
+## Command line options
+
+Starting the script with `-h` lists all supported command line options
+Currently supported are 2 options, which are both useful for running multiple instances of Calibre-Web
+
+`"-p path"` allows to specify the location of the settings database 
+`"-p path"` allows to specify the location of the google-drive database 
+
