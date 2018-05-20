@@ -37,6 +37,7 @@ import shutil
 import requests
 import zipfile
 from tornado.ioloop import IOLoop
+
 try:
     import gdriveutils as gd
 except ImportError:
@@ -45,6 +46,7 @@ import web
 
 try:
     import unidecode
+
     use_unidecode = True
 except ImportError:
     use_unidecode = False
@@ -65,6 +67,7 @@ def update_download(book_id, user_id):
         new_download = ub.Downloads(user_id=user_id, book_id=book_id)
         ub.session.add(new_download)
         ub.session.commit()
+
 
 def make_txt(book_id, calibrepath):
     error_message = None
@@ -137,11 +140,11 @@ def make_mobi(book_id, calibrepath):
         check = p.returncode
         if not check or check < 2:
             book.data.append(db.Data(
-                    name=book.data[0].name,
-                    book_format="MOBI",
-                    book=book.id,
-                    uncompressed_size=os.path.getsize(file_path + ".mobi")
-                ))
+                name=book.data[0].name,
+                book_format="MOBI",
+                book=book.id,
+                uncompressed_size=os.path.getsize(file_path + ".mobi")
+            ))
             db.session.commit()
             return file_path + ".mobi", RET_SUCCESS
         else:
@@ -155,7 +158,6 @@ def make_mobi(book_id, calibrepath):
 
 
 class StderrLogger(object):
-
     buffer = ''
 
     def __init__(self):
@@ -185,7 +187,7 @@ def send_raw_email(kindle_mail, msg):
 
     # send email
     try:
-        timeout = 600     # set timeout to 5mins
+        timeout = 600  # set timeout to 5mins
 
         org_stderr = sys.stderr
         sys.stderr = StderrLogger()
@@ -289,7 +291,7 @@ def get_valid_filename(value, replace_whitespace=True):
     filename. Limits num characters to 128 max.
     """
     if value[-1:] == u'.':
-        value = value[:-1]+u'_'
+        value = value[:-1] + u'_'
     value = value.replace("/", "_").replace(":", "_").strip('\0')
     if use_unidecode:
         value = (unidecode.unidecode(value)).strip()
@@ -334,7 +336,8 @@ def delete_book(book, calibrepath):
         path = os.path.join(calibrepath, book.path)
         shutil.rmtree(path, ignore_errors=True)
     else:
-        logging.getLogger('cps.web').error("Deleting book " + str(book.id) + " failed, book path value: "+ book.path)
+        logging.getLogger('cps.web').error("Deleting book " + str(book.id) + " failed, book path value: " + book.path)
+
 
 # ToDo: Implement delete book on gdrive
 def delete_book_gdrive(book):
@@ -484,7 +487,7 @@ class Updater(threading.Thread):
             dst_dir = src_dir.replace(root_src_dir, root_dst_dir, 1)
             if not os.path.exists(dst_dir):
                 os.makedirs(dst_dir)
-                logging.getLogger('cps.web').debug('Create-Dir: '+dst_dir)
+                logging.getLogger('cps.web').debug('Create-Dir: ' + dst_dir)
                 if change_permissions:
                     # print('Permissions: User '+str(new_permissions.st_uid)+' Group '+str(new_permissions.st_uid))
                     os.chown(dst_dir, new_permissions.st_uid, new_permissions.st_gid)
@@ -494,13 +497,13 @@ class Updater(threading.Thread):
                 if os.path.exists(dst_file):
                     if change_permissions:
                         permission = os.stat(dst_file)
-                    logging.getLogger('cps.web').debug('Remove file before copy: '+dst_file)
+                    logging.getLogger('cps.web').debug('Remove file before copy: ' + dst_file)
                     os.remove(dst_file)
                 else:
                     if change_permissions:
                         permission = new_permissions
                 shutil.move(src_file, dst_dir)
-                logging.getLogger('cps.web').debug('Move File '+src_file+' to '+dst_dir)
+                logging.getLogger('cps.web').debug('Move File ' + src_file + ' to ' + dst_dir)
                 if change_permissions:
                     try:
                         os.chown(dst_file, permission.st_uid, permission.st_gid)
@@ -508,8 +511,10 @@ class Updater(threading.Thread):
                         # ex = sys.exc_info()
                         old_permissions = os.stat(dst_file)
                         logging.getLogger('cps.web').debug('Fail change permissions of ' + str(dst_file) + '. Before: '
-                            + str(old_permissions.st_uid) + ':' + str(old_permissions.st_gid) + ' After: '
-                            + str(permission.st_uid) + ':' + str(permission.st_gid) + ' error: '+str(e))
+                                                           + str(old_permissions.st_uid) + ':' + str(
+                            old_permissions.st_gid) + ' After: '
+                                                           + str(permission.st_uid) + ':' + str(
+                            permission.st_gid) + ' error: ' + str(e))
         return
 
     def update_source(self, source, destination):
