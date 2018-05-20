@@ -22,7 +22,7 @@
         <input type="text" class="form-control" name="config_google_drive_client_secret" id="config_google_drive_client_secret" value="{% if content.config_google_drive_client_secret %}{{content.config_google_drive_client_secret}}{% endif %}" autocomplete="off">
       </div>
       <div class="form-group required">
-        <label for="config_google_drive_calibre_url_base">{{_('Calibre Base URL')}}</label>
+        <label for="config_google_drive_calibre_url_base">{{_('Calibre-web Base URL')}}</label>
         <input type="text" class="form-control" name="config_google_drive_calibre_url_base" id="config_google_drive_calibre_url_base" value="{% if content.config_google_drive_calibre_url_base %}{{content.config_google_drive_calibre_url_base}}{% endif %}" autocomplete="off">
       </div>
       <div class="form-group required">
@@ -51,6 +51,14 @@
     <div class="form-group">
       <label for="config_port">{{_('Server Port')}}</label>
       <input type="number" min="1" max="65535" class="form-control" name="config_port" id="config_port" value="{% if content.config_port != None %}{{ content.config_port }}{% endif %}" autocomplete="off" required>
+    </div>
+    <div class="form-group">
+      <label for="config_certfile">{{_('SSL certfile location (leave it empty for non-SSL Servers)')}}</label>
+      <input type="text" class="form-control" name="config_certfile" id="config_certfile" value="{% if content.config_certfile != None %}{{ content.config_certfile }}{% endif %}" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label for="config_keyfile">{{_('SSL Keyfile location (leave it empty for non-SSL Servers)')}}</label>
+      <input type="text" class="form-control" name="config_keyfile" id="config_keyfile" value="{% if content.config_keyfile != None %}{{ content.config_keyfile }}{% endif %}" autocomplete="off">
     </div>
     <div class="form-group">
       <label for="config_calibre_web_title">{{_('Title')}}</label>

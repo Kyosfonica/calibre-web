@@ -13,6 +13,7 @@ import os
 import traceback
 import re
 import unicodedata
+from io import BytesIO
 
 try:
     from StringIO import StringIO
@@ -64,6 +65,28 @@ def update_download(book_id, user_id):
         new_download = ub.Downloads(user_id=user_id, book_id=book_id)
         ub.session.add(new_download)
         ub.session.commit()
+
+def make_txt(book_id, calibrepath):
+    error_message = None
+    book = db.session.query(db.Books).filter(db.Books.id == book_id).first()
+    data = db.session.query(db.Data).filter(db.Data.book == book.id).filter(db.Data.format == 'EPUB').first()
+    if not data:
+        error_message = _(u"epub format not found for book id: %(book)d", book=book_id)
+        app.logger.error("make_txt: " + error_message)
+        return error_message, RET_FAIL
+    file_path = os.path.join(calibrepath, book.path, data.name)
+    if os.path.exists(file_path + u".epub"):
+        try:
+            shutil.copy2(file_path + u".epub", file_path + u".txt")
+        except Exception:
+            error_message = _(u"copy file failed, maybe no write permissions")
+            app.logger.error("make_txt: " + error_message)
+            return error_message, RET_FAIL
+
+        return file_path + ".txt", RET_SUCCESS
+    else:
+        error_message = "make_txt: epub not found: %s.epub" % file_path
+        return error_message, RET_FAIL
 
 
 def make_mobi(book_id, calibrepath):
@@ -227,7 +250,7 @@ def send_mail(book_id, kindle_mail, calibrepath):
     if 'mobi' in formats:
         msg.attach(get_attachment(formats['mobi']))
     elif 'epub' in formats:
-        data, resultCode = make_mobi(book.id, calibrepath)
+        data, resultCode = make_txt(book.id, calibrepath)
         if resultCode == RET_SUCCESS:
             msg.attach(get_attachment(data))
         else:
@@ -386,7 +409,7 @@ class Updater(threading.Thread):
         r = requests.get('https://api.github.com/repos/janeczku/calibre-web/zipball/master', stream=True)
         fname = re.findall("filename=(.+)", r.headers['content-disposition'])[0]
         self.status = 2
-        z = zipfile.ZipFile(StringIO(r.content))
+        z = zipfile.ZipFile(BytesIO(r.content))
         self.status = 3
         tmp_dir = gettempdir()
         z.extractall(tmp_dir)
@@ -481,7 +504,7 @@ class Updater(threading.Thread):
                 if change_permissions:
                     try:
                         os.chown(dst_file, permission.st_uid, permission.st_gid)
-                    except Exception:
+                    except (Exception) as e:
                         # ex = sys.exc_info()
                         old_permissions = os.stat(dst_file)
                         logging.getLogger('cps.web').debug('Fail change permissions of ' + str(dst_file) + '. Before: '
