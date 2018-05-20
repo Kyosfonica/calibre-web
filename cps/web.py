@@ -1699,13 +1699,30 @@ def advanced_search():
         author_name = request.args.get("author_name")
         book_title = request.args.get("book_title")
         publisher = request.args.get("publisher")
+        pub_start = request.args.get("Publishstart")
+        pub_end = request.args.get("Publishend")
         if author_name: author_name = author_name.strip().lower()
         if book_title: book_title = book_title.strip().lower()
         if publisher: publisher = publisher.strip().lower()
         if include_tag_inputs or exclude_tag_inputs or include_series_inputs or exclude_series_inputs or \
-                include_languages_inputs or exclude_languages_inputs or author_name or book_title or publisher:
+                include_languages_inputs or exclude_languages_inputs or author_name or book_title or \
+                publisher or pub_start or pub_end:
             searchterm = []
             searchterm.extend((author_name, book_title, publisher))
+            if pub_start:
+                try:
+                    searchterm.extend([_(u"Published after %s" %
+                                   format_date(datetime.datetime.strptime(pub_start,"%Y-%m-%d"),
+                                               format='medium', locale=get_locale()))])
+                except ValueError:
+                    pub_start = u""
+            if pub_end:
+                try:
+                    searchterm.extend([_(u"Published before ") +
+                                   format_date(datetime.datetime.strptime(pub_end,"%Y-%m-%d"),
+                                               format='medium', locale=get_locale())])
+                except ValueError:
+                    pub_start = u""
             tag_names = db.session.query(db.Tags).filter(db.Tags.id.in_(include_tag_inputs)).all()
             searchterm.extend(tag.name for tag in tag_names)
             # searchterm = " + ".join(filter(None, searchterm))
@@ -1725,6 +1742,10 @@ def advanced_search():
                 q = q.filter(db.Books.authors.any(db.Authors.name.ilike("%" + author_name + "%")))
             if book_title:
                 q = q.filter(db.Books.title.ilike("%" + book_title + "%"))
+            if pub_start:
+                q = q.filter(db.Books.pubdate >= pub_start)
+            if pub_end:
+                q = q.filter(db.Books.pubdate <= pub_end)
             if publisher:
                 q = q.filter(db.Books.publishers.any(db.Publishers.name.ilike("%" + publisher + "%")))
             for tag in include_tag_inputs:
@@ -2025,9 +2046,9 @@ def login():
             app.logger.info('Login failed for user "' + form['username'] + '" IP-adress: ' + ipAdress)
             flash(_(u"Wrong Username or Password"), category="error")
 
-    next_url = request.args.get('next')
-    if next_url is None or not is_safe_url(next_url):
-        next_url = url_for('index')
+    # next_url = request.args.get('next')
+    # if next_url is None or not is_safe_url(next_url):
+    next_url = url_for('index')
 
     return render_title_template('login.html', title=_(u"login"), next_url=next_url,
                                  remote_login=config.config_remote_login)
@@ -2425,6 +2446,7 @@ def profile():
             content.sidebar_view += ub.DETAIL_RANDOM
 
         content.mature_content = "show_mature_content" in to_save
+        content.theme = int(to_save["theme"])
 
         try:
             ub.session.commit()
@@ -2522,6 +2544,28 @@ def configuration_helper(origin):
             if content.config_port != int(to_save["config_port"]):
                 content.config_port = int(to_save["config_port"])
                 reboot_required = True
+        if "config_keyfile" in to_save:
+            if content.config_keyfile != to_save["config_keyfile"]:
+                if os.path.isfile(to_save["config_keyfile"]) or to_save["config_keyfile"] is u"":
+                    content.config_keyfile = to_save["config_keyfile"]
+                    reboot_required = True
+                else:
+                    ub.session.commit()
+                    flash(_(u'Keyfile location is not valid, please enter correct path'), category="error")
+                    return render_title_template("config_edit.html", content=config, origin=origin,
+                                                 gdrive=gdrive_support,
+                                                 goodreads=goodreads_support, title=_(u"Basic Configuration"))
+        if "config_certfile" in to_save:
+            if content.config_certfile != to_save["config_certfile"]:
+                if os.path.isfile(to_save["config_certfile"]) or to_save["config_certfile"] is u"":
+                    content.config_certfile = to_save["config_certfile"]
+                    reboot_required = True
+                else:
+                    ub.session.commit()
+                    flash(_(u'Certfile location is not valid, please enter correct path'), category="error")
+                    return render_title_template("config_edit.html", content=config, origin=origin,
+                                                 gdrive=gdrive_support,
+                                                 goodreads=goodreads_support, title=_(u"Basic Configuration"))
         if "config_calibre_web_title" in to_save:
             content.config_calibre_web_title = to_save["config_calibre_web_title"]
         if "config_columns_to_ignore" in to_save:
@@ -2680,6 +2724,7 @@ def new_user():
         content.email = to_save["email"]
         content.default_language = to_save["default_language"]
         content.mature_content = "show_mature_content" in to_save
+        content.theme = int(to_save["theme"])
         if "locale" in to_save:
             content.locale = to_save["locale"]
         content.sidebar_view = 0
@@ -2888,6 +2933,7 @@ def edit_user(user_id):
                 content.sidebar_view -= ub.DETAIL_RANDOM
 
             content.mature_content = "show_mature_content" in to_save
+            content.theme = int(to_save["theme"])
 
             if "default_language" in to_save:
                 content.default_language = to_save["default_language"]
@@ -3309,11 +3355,15 @@ def start_gevent():
     from gevent.wsgi import WSGIServer
     global gevent_server
     try:
-        gevent_server = WSGIServer(('', ub.config.config_port), app)
+        ssl_args=dict()
+        if ub.config.get_config_certfile() and ub.config.get_config_keyfile():
+            ssl_args = {"certfile": ub.config.get_config_certfile(),
+                        "keyfile": ub.config.get_config_keyfile()}
+        gevent_server = WSGIServer(('', ub.config.config_port), app, **ssl_args)
         gevent_server.serve_forever()
     except SocketError:
         app.logger.info('Unable to listen on \'\', trying on IPv4 only...')
-        gevent_server = WSGIServer(('0.0.0.0', ub.config.config_port), app)
+        gevent_server = WSGIServer(('0.0.0.0', ub.config.config_port), app, **ssl_args)
         gevent_server.serve_forever()
     except:
         pass
