@@ -101,7 +101,7 @@ current_milli_time = lambda: int(round(time.time() * 1000))
 gdrive_watch_callback_token = 'target=calibreweb-watch_files'
 global_task = None
 
-ALLOWED_EXTENSIONS = set(['txt', 'pdf', 'epub', 'mobi', 'azw', 'azw3', 'cbr', 'cbz', 'cbt', 'djvu', 'prc', 'doc', 'docx', 'fb2'])
+ALLOWED_EXTENSIONS = set(['txt', 'pdf', 'epub', 'mobi', 'azw', 'azw3', 'cbr', 'cbz', 'cbt', 'djvu', 'prc', 'doc', 'docx', 'fb2', 'zip', 'rar'])
 
 
 def md5(fname):
