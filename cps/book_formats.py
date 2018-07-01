@@ -52,6 +52,8 @@ def process(tmp_file_path, original_file_name, original_file_extension):
             meta = fb2.get_fb2_info(tmp_file_path, original_file_extension)
         if original_file_extension.upper() in ['.CBZ', '.CBT']:
             meta = comic.get_comic_info(tmp_file_path, original_file_name, original_file_extension)
+        if original_file_extension.upper() in ['.ZIP', '.RAR']:
+            meta = default_meta(tmp_file_path, original_file_name, original_file_extension)
 
     except Exception as ex:
         logger.warning('cannot parse metadata, using default: %s', ex)
