@@ -254,7 +254,7 @@ class Books(Base):
     uuid = Column(String)
 
     authors = relationship('Authors', secondary=books_authors_link, backref='books')
-    tags = relationship('Tags', secondary=books_tags_link, backref='books')
+    tags = relationship('Tags', secondary=books_tags_link, backref='books',order_by="Tags.name")
     comments = relationship('Comments', backref='books')
     data = relationship('Data', backref='books')
     series = relationship('Series', secondary=books_series_link, backref='books')
@@ -280,6 +280,9 @@ class Books(Base):
                                                                  self.timestamp, self.pubdate, self.series_index,
                                                                  self.last_modified, self.path, self.has_cover)
 
+    @property
+    def atom_timestamp(self):
+        return (self.timestamp or '').replace(' ', 'T')
 
 class Custom_Columns(Base):
     __tablename__ = 'custom_columns'
