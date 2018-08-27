@@ -47,6 +47,28 @@ def update_download(book_id, user_id):
         ub.session.add(new_download)
         ub.session.commit()
 
+def make_txt(book_id, calibrepath):
+    error_message = None
+    book = db.session.query(db.Books).filter(db.Books.id == book_id).first()
+    data = db.session.query(db.Data).filter(db.Data.book == book.id).filter(db.Data.format == 'EPUB').first()
+    if not data:
+        error_message = _(u"epub format not found for book id: %(book)d", book=book_id)
+        app.logger.error("make_txt: " + error_message)
+        return error_message
+    file_path = os.path.join(calibrepath, book.path, data.name)
+    if os.path.exists(file_path + u".epub"):
+        try:
+            shutil.copy2(file_path + u".epub", file_path + u".txt")
+        except Exception:
+            error_message = _(u"copy file failed, maybe no write permissions")
+            app.logger.error("make_txt: " + error_message)
+            return error_message
+
+        return file_path + ".txt"
+    else:
+        error_message = "make_txt: epub not found: %s.epub" % file_path
+        return error_message
+
 def make_mobi(book_id, calibrepath, user_id, kindle_mail):
     book = db.session.query(db.Books).filter(db.Books.id == book_id).first()
     data = db.session.query(db.Data).filter(db.Data.book == book.id).filter(db.Data.format == 'EPUB').first()
