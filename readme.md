@@ -83,7 +83,7 @@ Once a project has been created, we need to create a client ID and a client secr
 5. Select Web Application and then next
 6. Give the Credentials a name and enter your callback, which will be CALIBRE_WEB_URL/gdrive/callback
 7. Click save
-8. Download json file and place it in `calibre-web` directory, with the name `client_secret.json`  
+8. Download json file and place it in `calibre-web` directory, with the name `client_secrets.json`  
 
 The Drive API should now be setup and ready to use, so we need to integrate it into Calibre-Web. This is done as below: -
 
@@ -92,7 +92,7 @@ The Drive API should now be setup and ready to use, so we need to integrate it i
 2. Tick Use Google Drive
 3. Click the "Submit" button
 4. Now select Authenticate Google Drive
-5. This should redirect you to Google to allow it top use your Drive, and then redirect you back to the config page
+5. This should redirect you to Google. After allowing it to use your Drive, it redirects you back to the config page
 6. Select the folder that is the root of your calibre library on Gdrive ("Google drive Calibre folder")
 7. Click the "Submit" button
 8. Google Drive should now be connected and be used to get images and download Epubs. The metadata.db is stored in the calibre library location
@@ -105,9 +105,19 @@ Additionally the public adress your server uses (e.g.https://example.com) has to
 10. Click enable watch of metadata.db
 11. Note that this expires after a week, so will need to be manually refresh 
 
-## Docker image
+## Docker images
 
-Calibre Web can be run as Docker container. Pre-built Docker images based on Alpine Linux are available in this Docker Hub repository: [technosoft2000/calibre-web](https://hub.docker.com/r/technosoft2000/calibre-web/).
+Pre-built Docker images based on Alpine Linux are available in these Docker Hub repositories:
+
+**x64**
++ **technosoft2000** at [technosoft2000/calibre-web](https://hub.docker.com/r/technosoft2000/calibre-web/)
++ **linuxserver.io** at [linuxserver/calibre-web](https://hub.docker.com/r/linuxserver/calibre-web/)
+
+**armhf**
++ **linuxserver.io** at [lsioarmhf/calibre-web](https://hub.docker.com/r/lsioarmhf/calibre-web/)
+
+**aarch64**
++ **linuxserver.io** at [lsioarmhf/calibre-web-aarch64](https://hub.docker.com/r/lsioarmhf/calibre-web-aarch64)
 
 ## Reverse Proxy
 
@@ -121,8 +131,9 @@ http {
         server  127.0.0.1:8083;
     }
     server {
+            client_max_body_size 20M;
             location /calibre {
-                proxy_bind              $server_addr;
+                proxy_bind              $server_adress;
                 proxy_pass              http://127.0.0.1:8083;
                 proxy_set_header        Host            $http_host;
                 proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -131,6 +142,10 @@ http {
         }
     }
 }
+```
+*Note: If using SSL in your reverse proxy on a non-standard port (e.g.12345), the following proxy_redirect line may be required:*
+```
+proxy_redirect http://$host/ https://$host:12345/;
 ```
 
 Apache 2.4 configuration for a local server listening on port 443, mapping calibre web to /calibre-web:
@@ -174,6 +189,7 @@ Description=Calibre-Web
 Type=simple
 User=[Username]
 ExecStart=[path to python] [/PATH/TO/cps.py]
+WorkingDirectory=[/PATH/TO/cps.py]
 
 [Install]
 WantedBy=multi-user.target
