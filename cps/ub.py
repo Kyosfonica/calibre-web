@@ -10,7 +10,6 @@ import sys
 import os
 import logging
 from werkzeug.security import generate_password_hash
-from flask_babel import gettext as _
 import json
 import datetime
 from binascii import hexlify
@@ -47,10 +46,8 @@ DEFAULT_PASS = "admin123"
 DEFAULT_PORT = int(os.environ.get("CALIBRE_PORT", 8083))
 
 
-DEVELOPMENT = False
-
-
 class UserBase:
+
     @property
     def is_authenticated(self):
         return True
@@ -172,7 +169,7 @@ class User(UserBase, Base):
     theme = Column(Integer, default=0)
 
 
-# Class for anonymous user is derived from User base and complets overrides methods and properties for the
+# Class for anonymous user is derived from User base and completly overrides methods and properties for the
 # anonymous user
 class Anonymous(AnonymousUserMixin, UserBase):
     def __init__(self):
@@ -206,7 +203,7 @@ class Anonymous(AnonymousUserMixin, UserBase):
         return False
 
 
-# Baseclass representing Shelfs in calibre-web inapp.db
+# Baseclass representing Shelfs in calibre-web in app.db
 class Shelf(Base):
     __tablename__ = 'shelf'
 
@@ -282,6 +279,7 @@ class Settings(Base):
     config_calibre_web_title = Column(String, default=u'Calibre-web')
     config_books_per_page = Column(Integer, default=60)
     config_random_books = Column(Integer, default=4)
+    config_read_column = Column(Integer, default=0)
     config_title_regex = Column(String, default=u'^(A|The|An|Der|Die|Das|Den|Ein|Eine|Einen|Dem|Des|Einem|Eines)\s+')
     config_log_level = Column(SmallInteger, default=logging.INFO)
     config_uploading = Column(SmallInteger, default=0)
@@ -291,17 +289,17 @@ class Settings(Base):
     config_default_show = Column(SmallInteger, default=2047)
     config_columns_to_ignore = Column(String)
     config_use_google_drive = Column(Boolean)
-    # config_google_drive_client_id = Column(String)
-    # config_google_drive_client_secret = Column(String)
     config_google_drive_folder = Column(String)
-    # config_google_drive_calibre_url_base = Column(String)
     config_google_drive_watch_changes_response = Column(String)
     config_remote_login = Column(Boolean)
     config_use_goodreads = Column(Boolean)
     config_goodreads_api_key = Column(String)
     config_goodreads_api_secret = Column(String)
-    config_mature_content_tags = Column(String)  # type: str
+    config_mature_content_tags = Column(String)
     config_logfile = Column(String)
+    config_ebookconverter = Column(Integer, default=0)
+    config_converterpath = Column(String)
+    config_calibre = Column(String)
 
     def __repr__(self):
         pass
@@ -344,6 +342,7 @@ class Config:
         self.config_books_per_page = data.config_books_per_page
         self.config_random_books = data.config_random_books
         self.config_title_regex = data.config_title_regex
+        self.config_read_column = data.config_read_column
         self.config_log_level = data.config_log_level
         self.config_uploading = data.config_uploading
         self.config_anonbrowse = data.config_anonbrowse
@@ -352,10 +351,10 @@ class Config:
         self.config_default_show = data.config_default_show
         self.config_columns_to_ignore = data.config_columns_to_ignore
         self.config_use_google_drive = data.config_use_google_drive
-        # self.config_google_drive_client_id = data.config_google_drive_client_id
-        # self.config_google_drive_client_secret = data.config_google_drive_client_secret
-        # self.config_google_drive_calibre_url_base = data.config_google_drive_calibre_url_base
         self.config_google_drive_folder = data.config_google_drive_folder
+        self.config_ebookconverter = data.config_ebookconverter
+        self.config_converterpath = data.config_converterpath
+        self.config_calibre = data.config_calibre
         if data.config_google_drive_watch_changes_response:
             self.config_google_drive_watch_changes_response = json.loads(data.config_google_drive_watch_changes_response)
         else:
@@ -367,7 +366,10 @@ class Config:
         self.config_use_goodreads = data.config_use_goodreads
         self.config_goodreads_api_key = data.config_goodreads_api_key
         self.config_goodreads_api_secret = data.config_goodreads_api_secret
-        self.config_mature_content_tags = data.config_mature_content_tags
+        if data.config_mature_content_tags:
+            self.config_mature_content_tags = data.config_mature_content_tags
+        else:
+            self.config_mature_content_tags = u''
         if data.config_logfile:
             self.config_logfile = data.config_logfile
 
@@ -544,15 +546,11 @@ def migrate_Database():
         conn.execute("ALTER TABLE Settings ADD column `config_anonbrowse` SmallInteger DEFAULT 0")
         conn.execute("ALTER TABLE Settings ADD column `config_public_reg` SmallInteger DEFAULT 0")
         session.commit()
-
     try:
         session.query(exists().where(Settings.config_use_google_drive)).scalar()
     except exc.OperationalError:
         conn = engine.connect()
         conn.execute("ALTER TABLE Settings ADD column `config_use_google_drive` INTEGER DEFAULT 0")
-        # conn.execute("ALTER TABLE Settings ADD column `config_google_drive_client_id` String DEFAULT ''")
-        # conn.execute("ALTER TABLE Settings ADD column `config_google_drive_client_secret` String DEFAULT ''")
-        # conn.execute("ALTER TABLE Settings ADD column `config_google_drive_calibre_url_base` INTEGER DEFAULT 0")
         conn.execute("ALTER TABLE Settings ADD column `config_google_drive_folder` String DEFAULT ''")
         conn.execute("ALTER TABLE Settings ADD column `config_google_drive_watch_changes_response` String DEFAULT ''")
     try:
@@ -649,6 +647,27 @@ def migrate_Database():
         conn.execute("ALTER TABLE Settings ADD column `config_certfile` String DEFAULT ''")
         conn.execute("ALTER TABLE Settings ADD column `config_keyfile` String DEFAULT ''")
         session.commit()
+    try:
+        session.query(exists().where(Settings.config_read_column)).scalar()
+        session.commit()
+    except exc.OperationalError:  # Database is not compatible, some rows are missing
+        conn = engine.connect()
+        conn.execute("ALTER TABLE Settings ADD column `config_read_column` INTEGER DEFAULT 0")
+        session.commit()
+    try:
+        session.query(exists().where(Settings.config_ebookconverter)).scalar()
+        session.commit()
+    except exc.OperationalError:  # Database is not compatible, some rows are missing
+        conn = engine.connect()
+        conn.execute("ALTER TABLE Settings ADD column `config_ebookconverter` INTEGER DEFAULT 0")
+        conn.execute("ALTER TABLE Settings ADD column `config_converterpath` String DEFAULT ''")
+        conn.execute("ALTER TABLE Settings ADD column `config_calibre` String DEFAULT ''")
+        session.commit()
+
+    # Remove login capability of user Guest
+    conn = engine.connect()
+    conn.execute("UPDATE user SET password='' where nickname = 'Guest' and password !=''")
+    session.commit()
 
 
 def clean_database():
@@ -687,14 +706,28 @@ def get_mail_settings():
 
     return data
 
+# Save downloaded books per user in calibre-web's own database
+def update_download(book_id, user_id):
+    check = session.query(Downloads).filter(Downloads.user_id == user_id).filter(Downloads.book_id ==
+                                                                                          book_id).first()
+
+    if not check:
+        new_download = Downloads(user_id=user_id, book_id=book_id)
+        session.add(new_download)
+        session.commit()
+
+# Delete non exisiting downloaded books in calibre-web's own database
+def delete_download(book_id):
+    session.query(Downloads).filter(book_id == Downloads.book_id).delete()
+    session.commit()
 
 # Generate user Guest (translated text), as anoymous user, no rights
 def create_anonymous_user():
     user = User()
-    user.nickname = _("Guest")
+    user.nickname = "Guest"
     user.email = 'no@email'
     user.role = ROLE_ANONYMOUS
-    user.password = generate_password_hash('1')
+    user.password = ''
 
     session.add(user)
     try:
@@ -740,5 +773,6 @@ else:
     migrate_Database()
     clean_database()
 
-# Generate global Settings Object accecable from every file
+# Generate global Settings Object accessible from every file
 config = Config()
+searched_ids = {}
