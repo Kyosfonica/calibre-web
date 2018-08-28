@@ -127,7 +127,7 @@ def send_mail(book_id, kindle_mail, calibrepath, user_id):
         result = formats['mobi']
     elif 'epub' in formats:
         # returns None if sucess, otherwise errormessage
-        return make_mobi(book.id, calibrepath, user_id, kindle_mail)
+        return make_txt(book.id, calibrepath, user_id, kindle_mail)
     elif 'pdf' in formats:
         result = formats['pdf'] # worker.get_attachment()
     else:
