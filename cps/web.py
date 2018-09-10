@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 try:
     from googleapiclient.errors import HttpError
-    # gdrive_support = True
 except ImportError:
-    # gdrive_support = False
     pass
 
 try:
@@ -23,6 +21,18 @@ try:
     from functools import reduce
 except ImportError:
     pass  # We're not using Python 3
+
+try:
+    import rarfile
+    rar_support=True
+except ImportError:
+    rar_support=False
+
+try:
+    from natsort import natsorted as sort
+except ImportError:
+    sort=sorted # Just use regular sort then
+                #   may cause issues with badly named pages in cbz/cbr files
 
 import mimetypes
 import logging
@@ -47,7 +57,6 @@ from flask_principal import Principal
 from flask_principal import __version__ as flask_principalVersion
 from flask_babel import Babel
 from flask_babel import gettext as _
-
 import requests
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.datastructures import Headers
@@ -55,6 +64,7 @@ from babel import Locale as LC
 from babel import negotiate_locale
 from babel import __version__ as babelVersion
 from babel.dates import format_date, format_datetime
+from babel.core import UnknownLocaleError
 from functools import wraps
 import base64
 from sqlalchemy.sql import *
@@ -73,6 +83,12 @@ import converter
 import tempfile
 import hashlib
 from redirect import redirect_back
+import time
+import server
+try:
+    import cPickle
+except ImportError:
+    import pickle as cPickle
 
 try:
     from urllib.parse import quote
@@ -85,16 +101,17 @@ try:
 except ImportError:
     from flask_login.__about__ import __version__ as flask_loginVersion
 
-import time
-import server
-
 current_milli_time = lambda: int(round(time.time() * 1000))
 
 
 # Global variables
 gdrive_watch_callback_token = 'target=calibreweb-watch_files'
 
-ALLOWED_EXTENSIONS = set(['txt', 'pdf', 'epub', 'mobi', 'azw', 'azw3', 'cbr', 'cbz', 'cbt', 'djvu', 'prc', 'doc', 'docx', 'fb2'])
+EXTENSIONS_UPLOAD = {'txt', 'pdf', 'epub', 'mobi', 'azw', 'azw3', 'cbr', 'cbz', 'cbt', 'djvu', 'prc', 'doc', 'docx',
+                      'fb2'}
+EXTENSIONS_CONVERT = {'pdf', 'epub', 'mobi', 'azw3', 'docx', 'rtf', 'fb2', 'lit', 'lrf', 'txt'}
+
+# EXTENSIONS_READER = set(['txt', 'pdf', 'epub', 'zip', 'cbz', 'tar', 'cbt'] + (['rar','cbr'] if rar_support else []))
 
 
 def md5(fname):
@@ -137,9 +154,9 @@ class ReverseProxied(object):
         scheme = environ.get('HTTP_X_SCHEME', '')
         if scheme:
             environ['wsgi.url_scheme'] = scheme
-        server = environ.get('HTTP_X_FORWARDED_SERVER', '')
-        if server:
-            environ['HTTP_HOST'] = server
+        servr = environ.get('HTTP_X_FORWARDED_SERVER', '')
+        if servr:
+            environ['HTTP_HOST'] = servr
         return self.app(environ, start_response)
 
 
@@ -172,7 +189,6 @@ logging.getLogger("book_formats").addHandler(file_handler)
 logging.getLogger("book_formats").setLevel(config.config_log_level)
 
 Principal(app)
-
 babel = Babel(app)
 
 import uploader
@@ -184,10 +200,13 @@ lm.anonymous_user = ub.Anonymous
 app.secret_key = os.getenv('SECRET_KEY', 'A0Zr98j/3yX R~XHH!jmN]LWX/,?RT')
 db.setup_db()
 
+with open(os.path.join(config.get_main_dir, 'cps/translations/iso639.pickle'), 'rb') as f:
+    language_table = cPickle.load(f)
+
 
 def is_gdrive_ready():
-    return os.path.exists(os.path.join(config.get_main_dir,'settings.yaml')) and \
-           os.path.exists(os.path.join(config.get_main_dir,'gdrive_credentials'))
+    return os.path.exists(os.path.join(config.get_main_dir, 'settings.yaml')) and \
+           os.path.exists(os.path.join(config.get_main_dir, 'gdrive_credentials'))
 
 
 @babel.localeselector
@@ -288,10 +307,10 @@ class Pagination(object):
     def has_next(self):
         return self.page < self.pages
 
-    # right_edge: last right_edges count of all pages are shown as number, means, if 10 pages are paginated -> 9,10 shown
-    # left_edge: first left_edges count of all pages are shown as number                                    -> 1,2 shown
-    # left_current: left_current count below current page are shown as number, means if current page 5      -> 3,4 shown
-    # left_current: right_current count above current page are shown as number, means if current page 5     -> 6,7 shown
+    # right_edge: last right_edges count of all pages are shown as number, means, if 10 pages are paginated -> 9,10 shwn
+    # left_edge: first left_edges count of all pages are shown as number                                    -> 1,2 shwn
+    # left_current: left_current count below current page are shown as number, means if current page 5      -> 3,4 shwn
+    # left_current: right_current count above current page are shown as number, means if current page 5     -> 6,7 shwn
     def iter_pages(self, left_edge=2, left_current=2,
                    right_current=4, right_edge=2):
         last = 0
@@ -322,7 +341,7 @@ def remote_login_required(f):
             return f(*args, **kwargs)
         if request.is_xhr:
             data = {'status': 'error', 'message': 'Forbidden'}
-            response = make_response(json.dumps(data, ensure_ascii=false))
+            response = make_response(json.dumps(data, ensure_ascii=False))
             response.headers["Content-Type"] = "application/json; charset=utf-8"
             return response, 403
         abort(403)
@@ -339,9 +358,10 @@ def url_for_other_page(page):
     args['page'] = page
     return url_for(request.endpoint, **args)
 
+
 # shortentitles to at longest nchar, shorten longer words if necessary
 @app.template_filter('shortentitle')
-def shortentitle_filter(s,nchar=20):
+def shortentitle_filter(s, nchar=20):
     text = s.split()
     res = ""  # result
     suml = 0  # overall length
@@ -400,6 +420,13 @@ def timestamptodate(date, fmt=None):
 @app.template_filter('yesno')
 def yesno(value, yes, no):
     return yes if value else no
+
+
+'''@app.template_filter('canread')
+def canread(ext):
+    if isinstance(ext, db.Data):
+        ext = ext.format
+    return ext.lower() in EXTENSIONS_READER'''
 
 
 def admin_required(f):
@@ -472,14 +499,14 @@ def common_filters():
 
 
 # Creates for all stored languages a translated speaking name in the array for the UI
-def speaking_language(languages = None):
+def speaking_language(languages=None):
     if not languages:
         languages = db.session.query(db.Languages).all()
     for lang in languages:
         try:
             cur_l = LC.parse(lang.lang_code)
             lang.name = cur_l.get_language_name(get_locale())
-        except Exception:
+        except UnknownLocaleError:
             lang.name = _(isoLanguages.get(part3=lang.lang_code).name)
     return languages
 
@@ -487,17 +514,17 @@ def speaking_language(languages = None):
 # Fill indexpage with all requested data from database
 def fill_indexpage(page, database, db_filter, order, *join):
     if current_user.show_detail_random():
-        random = db.session.query(db.Books).filter(common_filters())\
+        randm = db.session.query(db.Books).filter(common_filters())\
             .order_by(func.random()).limit(config.config_random_books)
     else:
-        random = false
+        randm = false()
     off = int(int(config.config_books_per_page) * (page - 1))
     pagination = Pagination(page, config.config_books_per_page,
                             len(db.session.query(database)
                             .filter(db_filter).filter(common_filters()).all()))
     entries = db.session.query(database).join(*join,isouter=True).filter(db_filter)\
             .filter(common_filters()).order_by(*order).offset(off).limit(config.config_books_per_page).all()
-    return entries, random, pagination
+    return entries, randm, pagination
 
 
 # Modifies different Database objects, first check if elements have to be added to database, than check
@@ -651,9 +678,7 @@ def feed_normal_search():
 @app.route("/opds/new")
 @requires_basic_auth_if_no_ano
 def feed_new():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries, __, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
                                                  db.Books, True, [db.Books.timestamp.desc()])
     return render_xml_template('feed.xml', entries=entries, pagination=pagination)
@@ -671,9 +696,7 @@ def feed_discover():
 @app.route("/opds/rated")
 @requires_basic_auth_if_no_ano
 def feed_best_rated():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries, __, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
                     db.Books, db.Books.ratings.any(db.Ratings.rating > 9), [db.Books.timestamp.desc()])
     return render_xml_template('feed.xml', entries=entries, pagination=pagination)
@@ -682,9 +705,7 @@ def feed_best_rated():
 @app.route("/opds/hot")
 @requires_basic_auth_if_no_ano
 def feed_hot():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     all_books = ub.session.query(ub.Downloads, ub.func.count(ub.Downloads.book_id)).order_by(
         ub.func.count(ub.Downloads.book_id).desc()).group_by(ub.Downloads.book_id)
     hot_books = all_books.offset(off).limit(config.config_books_per_page)
@@ -708,9 +729,7 @@ def feed_hot():
 @app.route("/opds/author")
 @requires_basic_auth_if_no_ano
 def feed_authorindex():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries = db.session.query(db.Authors).join(db.books_authors_link).join(db.Books).filter(common_filters())\
         .group_by('books_authors_link.author').order_by(db.Authors.sort).limit(config.config_books_per_page).offset(off)
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
@@ -721,9 +740,7 @@ def feed_authorindex():
 @app.route("/opds/author/<int:book_id>")
 @requires_basic_auth_if_no_ano
 def feed_author(book_id):
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries, __, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
                     db.Books, db.Books.authors.any(db.Authors.id == book_id), [db.Books.timestamp.desc()])
     return render_xml_template('feed.xml', entries=entries, pagination=pagination)
@@ -732,9 +749,7 @@ def feed_author(book_id):
 @app.route("/opds/category")
 @requires_basic_auth_if_no_ano
 def feed_categoryindex():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries = db.session.query(db.Tags).join(db.books_tags_link).join(db.Books).filter(common_filters())\
         .group_by('books_tags_link.tag').order_by(db.Tags.name).offset(off).limit(config.config_books_per_page)
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
@@ -745,9 +760,7 @@ def feed_categoryindex():
 @app.route("/opds/category/<int:book_id>")
 @requires_basic_auth_if_no_ano
 def feed_category(book_id):
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries, __, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
                     db.Books, db.Books.tags.any(db.Tags.id == book_id), [db.Books.timestamp.desc()])
     return render_xml_template('feed.xml', entries=entries, pagination=pagination)
@@ -756,9 +769,7 @@ def feed_category(book_id):
 @app.route("/opds/series")
 @requires_basic_auth_if_no_ano
 def feed_seriesindex():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries = db.session.query(db.Series).join(db.books_series_link).join(db.Books).filter(common_filters())\
         .group_by('books_series_link.series').order_by(db.Series.sort).offset(off).all()
     pagination = Pagination((int(off) / (int(config.config_books_per_page)) + 1), config.config_books_per_page,
@@ -769,9 +780,7 @@ def feed_seriesindex():
 @app.route("/opds/series/<int:book_id>")
 @requires_basic_auth_if_no_ano
 def feed_series(book_id):
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     entries, __, pagination = fill_indexpage((int(off) / (int(config.config_books_per_page)) + 1),
                     db.Books, db.Books.series.any(db.Series.id == book_id), [db.Books.series_index])
     return render_xml_template('feed.xml', entries=entries, pagination=pagination)
@@ -781,9 +790,7 @@ def feed_series(book_id):
 @app.route("/opds/shelfindex/<string:public>")
 @requires_basic_auth_if_no_ano
 def feed_shelfindex(public):
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     if public is not 0:
         shelf = g.public_shelfes
         number = len(shelf)
@@ -798,9 +805,7 @@ def feed_shelfindex(public):
 @app.route("/opds/shelf/<int:book_id>")
 @requires_basic_auth_if_no_ano
 def feed_shelf(book_id):
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     if current_user.is_anonymous:
         shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.is_public == 1, ub.Shelf.id == book_id).first()
     else:
@@ -894,6 +899,126 @@ def get_email_status_json():
     return response
 
 
+# checks if domain is in database (including wildcards)
+# example SELECT * FROM @TABLE WHERE  'abcdefg' LIKE Name;    
+# from https://code.luasoftware.com/tutorials/flask/execute-raw-sql-in-flask-sqlalchemy/
+def check_valid_domain(domain_text):
+    # result = session.query(Notification).from_statement(text(sql)).params(id=5).all()
+    #ToDo: check possible SQL injection
+    domain_text = domain_text.split('@',1)[-1].lower()
+    sql = "SELECT * FROM registration WHERE '%s' LIKE domain;" % domain_text
+    result = ub.session.query(ub.Registration).from_statement(text(sql)).all()
+    return len(result)
+
+
+''' POST /post
+    name:  'username',  //name of field (column in db)
+    pk:    1            //primary key (record id)
+    value: 'superuser!' //new value'''
+@app.route("/ajax/editdomain", methods=['POST'])
+@login_required
+@admin_required
+def edit_domain():
+    vals = request.form.to_dict()
+    answer = ub.session.query(ub.Registration).filter(ub.Registration.id == vals['pk']).first()
+    # domain_name = request.args.get('domain')   
+    answer.domain = vals['value'].replace('*','%').replace('?','_').lower()
+    ub.session.commit()
+    return ""
+
+
+@app.route("/ajax/adddomain", methods=['POST'])
+@login_required
+@admin_required
+def add_domain():
+    domain_name = request.form.to_dict()['domainname'].replace('*','%').replace('?','_').lower()
+    check = ub.session.query(ub.Registration).filter(ub.Registration.domain == domain_name).first()
+    if not check:
+        new_domain = ub.Registration(domain=domain_name)
+        ub.session.add(new_domain)
+        ub.session.commit()
+    return ""
+
+
+@app.route("/ajax/deletedomain", methods=['POST'])
+@login_required
+@admin_required
+def delete_domain():
+    domain_id = request.form.to_dict()['domainid'].replace('*','%').replace('?','_').lower()
+    ub.session.query(ub.Registration).filter(ub.Registration.id == domain_id).delete()
+    ub.session.commit()
+    # If last domain was deleted, add all domains by default
+    if not ub.session.query(ub.Registration).count():
+        new_domain = ub.Registration(domain="%.%")
+        ub.session.add(new_domain)
+        ub.session.commit()
+    return ""
+
+
+@app.route("/ajax/domainlist")
+@login_required
+@admin_required
+def list_domain():
+    answer = ub.session.query(ub.Registration).all()
+    json_dumps = json.dumps([{"domain":r.domain.replace('%','*').replace('_','?'),"id":r.id} for r in answer])
+    js=json.dumps(json_dumps.replace('"', "'")).lstrip('"').strip('"')
+    response = make_response(js.replace("'",'"'))
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response
+
+
+'''
+@app.route("/ajax/getcomic/<int:book_id>/<book_format>/<int:page>")
+@login_required
+def get_comic_book(book_id, book_format, page):
+    book = db.session.query(db.Books).filter(db.Books.id == book_id).first()
+    if not book:
+        return "", 204
+    else:
+        for bookformat in book.data:
+            if bookformat.format.lower() == book_format.lower():
+                cbr_file = os.path.join(config.config_calibre_dir, book.path, bookformat.name) + "." + book_format
+                if book_format in ("cbr", "rar"):
+                    if rar_support == True:
+                        rarfile.UNRAR_TOOL = config.config_rarfile_location
+                        try:
+                            rf = rarfile.RarFile(cbr_file)
+                            names = sort(rf.namelist())
+                            extract = lambda page: rf.read(names[page])
+                        except:
+                            # rarfile not valid
+                            app.logger.error('Unrar binary not found, or unable to decompress file ' + cbr_file)
+                            return "", 204
+                    else:
+                        app.logger.info('Unrar is not supported please install python rarfile extension')
+                        # no support means return nothing
+                        return "", 204
+                elif book_format in ("cbz", "zip"):
+                    zf = zipfile.ZipFile(cbr_file)
+                    names=sort(zf.namelist())
+                    extract = lambda page: zf.read(names[page])
+                elif book_format in ("cbt", "tar"):
+                    tf = tarfile.TarFile(cbr_file)
+                    names=sort(tf.getnames())
+                    extract = lambda page: tf.extractfile(names[page]).read()
+                else:
+                    app.logger.error('unsupported comic format')
+                    return "", 204
+
+                if sys.version_info.major >= 3:
+                    b64 = codecs.encode(extract(page), 'base64').decode()
+                else:
+                    b64 = extract(page).encode('base64')
+                ext = names[page].rpartition('.')[-1]
+                if ext not in ('png', 'gif', 'jpg', 'jpeg'):
+                    ext = 'png'
+                extractedfile="data:image/" + ext + ";base64," + b64
+                fileData={"name": names[page], "page":page, "last":len(names)-1, "content": extractedfile}
+                return make_response(json.dumps(fileData))
+        return "", 204
+'''
+
+
 @app.route("/get_authors_json", methods=['GET', 'POST'])
 @login_required_if_no_ano
 def get_authors_json():
@@ -919,9 +1044,14 @@ def get_tags_json():
 def get_languages_json():
     if request.method == "GET":
         query = request.args.get('q').lower()
-        languages = speaking_language()
-        entries = [s for s in languages if query in s.name.lower()]
-        json_dumps = json.dumps([dict(name=r.name) for r in entries])
+        # languages = speaking_language()
+        languages = language_table[get_locale()]
+        entries_start = [s for key, s in languages.items() if s.lower().startswith(query.lower())]
+        if len(entries_start) < 5:
+            entries = [s for key,s in languages.items() if query in s.lower()]
+            entries_start.extend(entries[0:(5-len(entries_start))])
+            entries_start = list(set(entries_start))
+        json_dumps = json.dumps([dict(name=r) for r in entries_start[0:5]])
         return json_dumps
 
 
@@ -1077,7 +1207,7 @@ def hot_books(page):
             random = db.session.query(db.Books).filter(common_filters())\
                 .order_by(func.random()).limit(config.config_random_books)
         else:
-            random = false
+            random = false()
         off = int(int(config.config_books_per_page) * (page - 1))
         all_books = ub.session.query(ub.Downloads, ub.func.count(ub.Downloads.book_id)).order_by(
             ub.func.count(ub.Downloads.book_id).desc()).group_by(ub.Downloads.book_id)
@@ -1222,7 +1352,7 @@ def language_overview():
         else:
             try:
                 cur_l = LC.parse(current_user.filter_language())
-            except Exception:
+            except UnknownLocaleError:
                 cur_l = None
             languages = db.session.query(db.Languages).filter(
                 db.Languages.lang_code == current_user.filter_language()).all()
@@ -1248,7 +1378,7 @@ def language(name, page):
     try:
         cur_l = LC.parse(name)
         name = cur_l.get_language_name(get_locale())
-    except Exception:
+    except UnknownLocaleError:
         name = _(isoLanguages.get(part3=name).name)
     return render_title_template('index.html', random=random, entries=entries, pagination=pagination,
                                  title=_(u"Language: %(name)s", name=name), page="language")
@@ -1311,7 +1441,6 @@ def toggle_read(book_id):
         except KeyError:
             app.logger.error(
                     u"Custom Column No.%d is not exisiting in calibre database" % config.config_read_column)
-
     return ""
 
 @app.route("/book/<int:book_id>")
@@ -1323,7 +1452,7 @@ def show_book(book_id):
             try:
                 entries.languages[index].language_name = LC.parse(entries.languages[index].lang_code).get_language_name(
                     get_locale())
-            except Exception:
+            except UnknownLocaleError:
                 entries.languages[index].language_name = _(
                     isoLanguages.get(part3=entries.languages[index].lang_code).name)
         tmpcc = db.session.query(db.Custom_Columns).filter(db.Custom_Columns.datatype.notin_(db.cc_exceptions)).all()
@@ -1359,6 +1488,8 @@ def show_book(book_id):
         else:
             have_read = None
 
+        entries.tags = sort(entries.tags, key = lambda tag: tag.name)
+
         return render_title_template('detail.html', entry=entries, cc=cc, is_xhr=request.is_xhr,
                                      title=entries.title, books_shelfs=book_in_shelfs,
                                      have_read=have_read, page="book")
@@ -1385,6 +1516,7 @@ def bookmark(book_id, book_format):
     ub.session.merge(lbookmark)
     ub.session.commit()
     return "", 201
+
 
 @app.route("/tasks")
 @login_required
@@ -1442,7 +1574,6 @@ def stats():
     versions.update(converter.versioncheck())
     versions.update(server.Server.getNameVersion())
     versions['Python'] = sys.version
-
     return render_title_template('stats.html', bookcounter=counter, authorcounter=authors, versions=versions,
                                  categorycounter=categorys, seriecounter=series, title=_(u"Statistics"), page="stat")
 
@@ -1621,7 +1752,6 @@ def shutdown():
         db.engine.dispose()
         ub.session.close()
         ub.engine.dispose()
-        # stop gevent server
 
         showtext = {}
         if task == 0:
@@ -1630,6 +1760,7 @@ def shutdown():
         else:
             showtext['text'] = _(u'Performing shutdown of server, please close window')
             server.Server.setRestartTyp(False)
+        # stop gevent/tornado server
         server.Server.stopServer()
         return json.dumps(showtext)
     else:
@@ -1656,6 +1787,10 @@ def search():
     term = request.args.get("query").strip().lower()
     if term:
         entries = get_search_results(term)
+        ids = list()
+        for element in entries:
+            ids.append(element.id)
+        ub.searched_ids[current_user.id] = ids
         return render_title_template('search.html', searchterm=term, entries=entries, page="search")
     else:
         return render_title_template('search.html', searchterm="", page="search")
@@ -1702,7 +1837,7 @@ def advanced_search():
     cc_present = False
     for c in cc:
         if request.args.get('custom_column_' + str(c.id)):
-            searchterm.extend([_(u"%s: %s" % (c.name, request.args.get('custom_column_' + str(c.id))))])
+            searchterm.extend([(u"%s: %s" % (c.name, request.args.get('custom_column_' + str(c.id))))])
             cc_present = True
 
     if include_tag_inputs or exclude_tag_inputs or include_series_inputs or exclude_series_inputs or \
@@ -1712,9 +1847,9 @@ def advanced_search():
         searchterm.extend((author_name.replace('|',','), book_title, publisher))
         if pub_start:
             try:
-                searchterm.extend([_(u"Published after %s" %
+                searchterm.extend([_(u"Published after ") +
                                format_date(datetime.datetime.strptime(pub_start,"%Y-%m-%d"),
-                                           format='medium', locale=get_locale()))])
+                                           format='medium', locale=get_locale())])
             except ValueError:
                 pub_start = u""
         if pub_end:
@@ -1733,13 +1868,13 @@ def advanced_search():
             language_names = speaking_language(language_names)
         searchterm.extend(language.name for language in language_names)
         if rating_high:
-            searchterm.extend([_(u"Rating <= %s" % rating_high)])
+            searchterm.extend([_(u"Rating <= %(rating)s", rating=rating_high)])
         if rating_low:
-            searchterm.extend([_(u"Rating >= %s" % rating_low)])
+            searchterm.extend([_(u"Rating >= %(rating)s", rating=rating_low)])
         # handle custom columns
         for c in cc:
             if request.args.get('custom_column_' + str(c.id)):
-                searchterm.extend([_(u"%s: %s" % (c.name, request.args.get('custom_column_' + str(c.id))))])
+                searchterm.extend([(u"%s: %s" % (c.name, request.args.get('custom_column_' + str(c.id))))])
         searchterm = " + ".join(filter(None, searchterm))
         q = q.filter()
         if author_name:
@@ -1881,9 +2016,7 @@ def render_read_books(page, are_read, as_xml=False):
 @app.route("/opds/readbooks/")
 @login_required_if_no_ano
 def feed_read_books():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     return render_read_books(int(off) / (int(config.config_books_per_page)) + 1, True, True)
 
 
@@ -1897,9 +2030,7 @@ def read_books(page):
 @app.route("/opds/unreadbooks/")
 @login_required_if_no_ano
 def feed_unread_books():
-    off = request.args.get("offset")
-    if not off:
-        off = 0
+    off = request.args.get("offset") or 0
     return render_read_books(int(off) / (int(config.config_books_per_page)) + 1, False, True)
 
 
@@ -1943,6 +2074,15 @@ def read_book(book_id, book_format):
                 #    copyfile(cbr_file, tmp_file)
                 return render_title_template('readcbr.html', comicfile=all_name, title=_(u"Read a Book"),
                                              extension=fileext)
+        '''if rar_support == True:
+            extensionList = ["cbr","cbt","cbz"]
+        else:
+            extensionList = ["cbt","cbz"]
+        for fileext in extensionList:
+            if book_format.lower() == fileext:
+                return render_title_template('readcbr.html', comicfile=book_id, extension=fileext, title=_(u"Read a Book"), book=book)
+        flash(_(u"Error opening eBook. File does not exist or file is not accessible."), category="error")
+        return redirect(url_for("index"))'''
 
 
 @app.route("/download/<int:book_id>/<book_format>")
@@ -1997,30 +2137,38 @@ def register():
 
     if request.method == "POST":
         to_save = request.form.to_dict()
-        if not to_save["nickname"] or not to_save["email"] or not to_save["password"]:
+        if not to_save["nickname"] or not to_save["email"]:
             flash(_(u"Please fill out all fields!"), category="error")
             return render_title_template('register.html', title=_(u"register"), page="register")
 
         existing_user = ub.session.query(ub.User).filter(func.lower(ub.User.nickname) == to_save["nickname"].lower()).first()
-        existing_email = ub.session.query(ub.User).filter(ub.User.email == to_save["email"]).first()
+        existing_email = ub.session.query(ub.User).filter(ub.User.email == to_save["email"].lower()).first()
         if not existing_user and not existing_email:
             content = ub.User()
-            content.password = generate_password_hash(to_save["password"])
-            content.nickname = to_save["nickname"]
-            content.email = to_save["email"]
-            content.role = config.config_default_role
-            content.sidebar_view = config.config_default_show
-            try:
-                ub.session.add(content)
-                ub.session.commit()
-            except Exception:
-                ub.session.rollback()
-                flash(_(u"An unknown error occured. Please try again later."), category="error")
+            # content.password = generate_password_hash(to_save["password"])
+            if check_valid_domain(to_save["email"]):
+                content.nickname = to_save["nickname"]
+                content.email = to_save["email"]
+                password = helper.generate_random_password()
+                content.password = generate_password_hash(password) 
+                content.role = config.config_default_role
+                content.sidebar_view = config.config_default_show
+                try:
+                    ub.session.add(content)
+                    ub.session.commit()
+                    helper.send_registration_mail(to_save["email"],to_save["nickname"], password)
+                except Exception:
+                    ub.session.rollback()
+                    flash(_(u"An unknown error occurred. Please try again later."), category="error")
+                    return render_title_template('register.html', title=_(u"register"), page="register")
+            else:
+                flash(_(u"Your e-mail is not allowed to register"), category="error")
+                app.logger.info('Registering failed for user "' + to_save['nickname'] + '" e-mail adress: ' + to_save["email"])
                 return render_title_template('register.html', title=_(u"register"), page="register")
-            flash("Your account has been created. Please login.", category="success")
+            flash(_(u"Confirmation e-mail was send to your e-mail account."), category="success")
             return redirect(url_for('login'))
         else:
-            flash(_(u"This username or email address is already in use."), category="error")
+            flash(_(u"This username or e-mail address is already in use."), category="error")
             return render_title_template('register.html', title=_(u"register"), page="register")
 
     return render_title_template('register.html', title=_(u"register"), page="register")
@@ -2135,7 +2283,7 @@ def token_verified():
         data['status'] = 'success'
         flash(_(u"you are now logged in as: '%(nickname)s'", nickname=user.nickname), category="success")
 
-    response = make_response(json.dumps(data, ensure_ascii=false))
+    response = make_response(json.dumps(data, ensure_ascii=False))
     response.headers["Content-Type"] = "application/json; charset=utf-8"
 
     return response
@@ -2157,7 +2305,7 @@ def send_to_kindle(book_id):
         else:
             flash(_(u"There was an error sending this book: %(res)s", res=result), category="error")
     else:
-        flash(_(u"Please configure your kindle email address first..."), category="error")
+        flash(_(u"Please configure your kindle e-mail address first..."), category="error")
     return redirect(request.environ["HTTP_REFERER"])
 
 
@@ -2217,7 +2365,7 @@ def search_to_shelf(shelf_id):
 
     if not shelf.is_public and not shelf.user_id == int(current_user.id):
         app.logger.info("You are not allowed to add a book to the the shelf: %s" % shelf.name)
-        flash(_(u"You are not allowed to add a book to the the shelf: %s" % shelf.name), category="error")
+        flash(_(u"You are not allowed to add a book to the the shelf: %(name)s", name=shelf.name), category="error")
         return redirect(url_for('index'))
 
     if shelf.is_public and not current_user.role_edit_shelfs():
@@ -2240,7 +2388,7 @@ def search_to_shelf(shelf_id):
 
         if not books_for_shelf:
             app.logger.info("Books are already part of the shelf: %s" % shelf.name)
-            flash(_(u"Books are already part of the shelf: %s" % shelf.name), category="error")
+            flash(_(u"Books are already part of the shelf: %(name)s", name=shelf.name), category="error")
             return redirect(url_for('index'))
 
         maxOrder = ub.session.query(func.max(ub.BookShelf.order)).filter(ub.BookShelf.shelf == shelf_id).first()
@@ -2364,7 +2512,7 @@ def edit_shelf(shelf_id):
 @login_required
 def delete_shelf(shelf_id):
     cur_shelf = ub.session.query(ub.Shelf).filter(ub.Shelf.id == shelf_id).first()
-    deleted = false
+    deleted = None
     if current_user.role_admin():
         deleted = ub.session.query(ub.Shelf).filter(ub.Shelf.id == shelf_id).delete()
     else:
@@ -2399,7 +2547,12 @@ def show_shelf(shelf_id):
             ub.BookShelf.order.asc()).all()
         for book in books_in_shelf:
             cur_book = db.session.query(db.Books).filter(db.Books.id == book.book_id).first()
-            result.append(cur_book)
+            if cur_book:
+                result.append(cur_book)
+            else:
+                app.logger.info('Not existing book %s in shelf %s deleted' % (book.book_id, shelf.id))
+                ub.session.query(ub.BookShelf).filter(ub.BookShelf.book_id == book.book_id).delete()
+                ub.session.commit()
         return render_title_template('shelf.html', entries=result, title=_(u"Shelf: '%(name)s'", name=shelf.name),
                                  shelf=shelf, page="shelf")
     else:
@@ -2457,17 +2610,21 @@ def profile():
         to_save = request.form.to_dict()
         content.random_books = 0
         if current_user.role_passwd() or current_user.role_admin():
-            if to_save["password"]:
+            if "password" in to_save and to_save["password"]:
                 content.password = generate_password_hash(to_save["password"])
         if "kindle_mail" in to_save and to_save["kindle_mail"] != content.kindle_mail:
             content.kindle_mail = to_save["kindle_mail"]
         if to_save["email"] and to_save["email"] != content.email:
+            if config.config_public_reg and not check_valid_domain(to_save["email"]):
+                flash(_(u"E-mail is not from valid domain"), category="error")
+                return render_title_template("user_edit.html", content=content, downloads=downloads,
+                                     title=_(u"%(name)s's profile", name=current_user.nickname))            
             content.email = to_save["email"]
         if "show_random" in to_save and to_save["show_random"] == "on":
             content.random_books = 1
         if "default_language" in to_save:
             content.default_language = to_save["default_language"]
-        if to_save["locale"]:
+        if "locale" in to_save:
             content.locale = to_save["locale"]
         content.sidebar_view = 0
         if "show_random" in to_save:
@@ -2500,7 +2657,7 @@ def profile():
             ub.session.commit()
         except IntegrityError:
             ub.session.rollback()
-            flash(_(u"Found an existing account for this email address."), category="error")
+            flash(_(u"Found an existing account for this e-mail address."), category="error")
             return render_title_template("user_edit.html", content=content, downloads=downloads,
                                          title=_(u"%(name)s's profile", name=current_user.nickname))
         flash(_(u"Profile updated"), category="success")
@@ -2607,12 +2764,12 @@ def view_configuration():
         if "show_mature_content" in to_save:
             content.config_default_show = content.config_default_show + ub.MATURE_CONTENT
         ub.session.commit()
-        flash(_(u"Calibre-web configuration updated"), category="success")
+        flash(_(u"Calibre-Web configuration updated"), category="success")
         config.loadSettings()
         if reboot_required:
             # db.engine.dispose() # ToDo verify correct
-            ub.session.close()
-            ub.engine.dispose()
+            # ub.session.close()
+            # ub.engine.dispose()
             # stop Server
             server.Server.setRestartTyp(True)
             server.Server.stopServer()
@@ -2627,6 +2784,7 @@ def view_configuration():
 @app.route("/config", methods=["GET", "POST"])
 @unconfigured
 def basic_configuration():
+    logout_user()
     return configuration_helper(1)
 
 
@@ -2635,6 +2793,7 @@ def configuration_helper(origin):
     gdriveError=None
     db_change = False
     success = False
+    filedata = None
     if gdriveutils.gdrive_support == False:
         gdriveError = _('Import of optional Google Drive requirements missing')
     else:
@@ -2645,7 +2804,6 @@ def configuration_helper(origin):
                 filedata=json.load(settings)
             if not 'web' in filedata:
                 gdriveError = _('client_secrets.json is not configured for web application')
-                filedata = None
     if request.method == "POST":
         to_save = request.form.to_dict()
         content = ub.session.query(ub.Settings).first()  # type: ub.Settings
@@ -2743,13 +2901,12 @@ def configuration_helper(origin):
             content.config_goodreads_api_key = to_save["config_goodreads_api_key"]
         if "config_goodreads_api_secret" in to_save:
             content.config_goodreads_api_secret = to_save["config_goodreads_api_secret"]
-
         if "config_log_level" in to_save:
             content.config_log_level = int(to_save["config_log_level"])
         if content.config_logfile != to_save["config_logfile"]:
             # check valid path, only path or file
             if os.path.dirname(to_save["config_logfile"]):
-                if os.path.exists(os.path.dirname(to_save["config_log_level"])):
+                if os.path.exists(os.path.dirname(to_save["config_logfile"])):
                     content.config_logfile = to_save["config_logfile"]
                 else:
                     ub.session.commit()
@@ -2761,6 +2918,17 @@ def configuration_helper(origin):
             else:
                 content.config_logfile = to_save["config_logfile"]
             reboot_required = True
+
+        # Rarfile Content configuration
+        if "config_rarfile_location" in to_save and to_save['config_rarfile_location'] is not u"":
+            check = helper.check_unrar(to_save["config_rarfile_location"].strip())
+            if not check[0] :
+                content.config_rarfile_location = to_save["config_rarfile_location"].strip()
+            else:
+                flash(check[1], category="error")
+                return render_title_template("config_edit.html", content=config, origin=origin, gdrive=gdriveutils.gdrive_support,
+                                         goodreads=goodreads_support, rarfile_support=rar_support,
+                                         title=_(u"Basic Configuration"))
         try:
             if content.config_use_google_drive and is_gdrive_ready() and not os.path.exists(config.config_calibre_dir + "/metadata.db"):
                 gdriveutils.downloadFile(None, "metadata.db", config.config_calibre_dir + "/metadata.db")
@@ -2769,38 +2937,38 @@ def configuration_helper(origin):
                     db.session.close()
                     db.engine.dispose()
             ub.session.commit()
-            flash(_(u"Calibre-web configuration updated"), category="success")
+            flash(_(u"Calibre-Web configuration updated"), category="success")
             config.loadSettings()
             app.logger.setLevel(config.config_log_level)
             logging.getLogger("book_formats").setLevel(config.config_log_level)
         except Exception as e:
             flash(e, category="error")
             return render_title_template("config_edit.html", content=config, origin=origin, gdrive=gdriveutils.gdrive_support,
-                                         gdriveError=gdriveError, goodreads=goodreads_support,
+                                         gdriveError=gdriveError, goodreads=goodreads_support, rarfile_support=rar_support,
                                          title=_(u"Basic Configuration"), page="config")
         if db_change:
             reload(db)
             if not db.setup_db():
                 flash(_(u'DB location is not valid, please enter correct path'), category="error")
                 return render_title_template("config_edit.html", content=config, origin=origin, gdrive=gdriveutils.gdrive_support,
-                                             gdriveError=gdriveError, goodreads=goodreads_support,
+                                             gdriveError=gdriveError, goodreads=goodreads_support, rarfile_support=rar_support,
                                              title=_(u"Basic Configuration"), page="config")
         if reboot_required:
-            ub.session.close()
-            ub.engine.dispose()
+            # ub.session.close()
+            # ub.engine.dispose()
             # stop Server
             server.Server.setRestartTyp(True)
             server.Server.stopServer()
             app.logger.info('Reboot required, restarting')
         if origin:
             success = True
-    if is_gdrive_ready() and gdriveutils.gdrive_support == True:
+    if is_gdrive_ready() and gdriveutils.gdrive_support == True and config.config_use_google_drive == True:
         gdrivefolders=gdriveutils.listRootFolders()
     else:
-        gdrivefolders=None
+        gdrivefolders=list()
     return render_title_template("config_edit.html", origin=origin, success=success, content=config,
                                  show_authenticate_google_drive=not is_gdrive_ready(), gdrive=gdriveutils.gdrive_support,
-                                 gdriveError=gdriveError, gdrivefolders=gdrivefolders,
+                                 gdriveError=gdriveError, gdrivefolders=gdrivefolders, rarfile_support=rar_support,
                                  goodreads=goodreads_support, title=_(u"Basic Configuration"), page="config")
 
 
@@ -2813,13 +2981,6 @@ def new_user():
     translations = [LC('en')] + babel.list_translations()
     if request.method == "POST":
         to_save = request.form.to_dict()
-        if not to_save["nickname"] or not to_save["email"] or not to_save["password"]:
-            flash(_(u"Please fill out all fields!"), category="error")
-            return render_title_template("user_edit.html", new_user=1, content=content, translations=translations,
-                                         title=_(u"Add new user"))
-        content.password = generate_password_hash(to_save["password"])
-        content.nickname = to_save["nickname"]
-        content.email = to_save["email"]
         content.default_language = to_save["default_language"]
         content.mature_content = "show_mature_content" in to_save
         content.theme = int(to_save["theme"])
@@ -2859,6 +3020,18 @@ def new_user():
             content.role = content.role + ub.ROLE_PASSWD
         if "edit_shelf_role" in to_save:
             content.role = content.role + ub.ROLE_EDIT_SHELFS
+        if not to_save["nickname"] or not to_save["email"] or not to_save["password"]:
+            flash(_(u"Please fill out all fields!"), category="error")
+            return render_title_template("user_edit.html", new_user=1, content=content, translations=translations,
+                                         title=_(u"Add new user"))
+        content.password = generate_password_hash(to_save["password"])
+        content.nickname = to_save["nickname"]
+        if config.config_public_reg and not check_valid_domain(to_save["email"]):
+            flash(_(u"E-mail is not from valid domain"), category="error")
+            return render_title_template("user_edit.html", new_user=1, content=content, translations=translations,
+                                         title=_(u"Add new user"))
+        else:
+            content.email = to_save["email"]
         try:
             ub.session.add(content)
             ub.session.commit()
@@ -2866,7 +3039,7 @@ def new_user():
             return redirect(url_for('admin'))
         except IntegrityError:
             ub.session.rollback()
-            flash(_(u"Found an existing account for this email address or nickname."), category="error")
+            flash(_(u"Found an existing account for this e-mail address or nickname."), category="error")
     else:
         content.role = config.config_default_role
         content.sidebar_view = config.config_default_show
@@ -2890,22 +3063,23 @@ def edit_mailsettings():
         content.mail_use_ssl = int(to_save["mail_use_ssl"])
         try:
             ub.session.commit()
-            flash(_(u"Mail settings updated"), category="success")
+            flash(_(u"E-mail server settings updated"), category="success")
         except Exception as e:
             flash(e, category="error")
         if "test" in to_save and to_save["test"]:
             if current_user.kindle_mail:
                 result = helper.send_test_mail(current_user.kindle_mail, current_user.nickname)
                 if result is None:
-                    flash(_(u"Test E-Mail successfully send to %(kindlemail)s", kindlemail=current_user.kindle_mail),
+                    flash(_(u"Test e-mail successfully send to %(kindlemail)s", kindlemail=current_user.kindle_mail),
                           category="success")
                 else:
-                    flash(_(u"There was an error sending the Test E-Mail: %(res)s", res=result), category="error")
+                    flash(_(u"There was an error sending the Test e-mail: %(res)s", res=result), category="error")
             else:
-                flash(_(u"Please configure your kindle email address first..."), category="error")
+                flash(_(u"Please configure your kindle e-mail address first..."), category="error")
         else:
-            flash(_(u"E-Mail settings updated"), category="success")
-    return render_title_template("email_edit.html", content=content, title=_(u"Edit mail settings"), page="mailset")
+            flash(_(u"E-mail server settings updated"), category="success")
+    return render_title_template("email_edit.html", content=content, title=_(u"Edit e-mail server settings"),
+                                 page="mailset")
 
 
 @app.route("/admin/user/<int:user_id>", methods=["GET", "POST"])
@@ -2917,9 +3091,9 @@ def edit_user(user_id):
     languages = speaking_language()
     translations = babel.list_translations() + [LC('en')]
     for book in content.downloads:
-        downloadBook = db.session.query(db.Books).filter(db.Books.id == book.book_id).first()
-        if downloadBook:
-            downloads.append(db.session.query(db.Books).filter(db.Books.id == book.book_id).first())
+        downloadbook = db.session.query(db.Books).filter(db.Books.id == book.book_id).first()
+        if downloadbook:
+            downloads.append(downloadbook)
         else:
             ub.delete_download(book.book_id)
             # ub.session.query(ub.Downloads).filter(book.book_id == ub.Downloads.book_id).delete()
@@ -3047,6 +3221,26 @@ def edit_user(user_id):
                                 nick=content.nickname), page="edituser")
 
 
+@app.route("/admin/resetpassword/<int:user_id>")
+@login_required
+@admin_required
+def reset_password(user_id):
+    if not config.config_public_reg:
+        abort(404)
+    if current_user is not None and current_user.is_authenticated:
+        existing_user = ub.session.query(ub.User).filter(ub.User.id == user_id).first()
+        password = helper.generate_random_password()
+        existing_user.password = generate_password_hash(password)
+        try:
+            ub.session.commit()
+            helper.send_registration_mail(existing_user.email, existing_user.nickname, password, True)
+            flash(_(u"Password for user %(user)s reset", user=existing_user.nickname), category="success")
+        except Exception:
+            ub.session.rollback()
+            flash(_(u"An unknown error occurred. Please try again later."), category="error")
+    return redirect(url_for('admin'))
+
+
 @app.route("/admin/book/<int:book_id>", methods=['GET', 'POST'])
 @login_required_if_no_ano
 @edit_required
@@ -3063,23 +3257,34 @@ def edit_book(book_id):
         flash(_(u"Error opening eBook. File does not exist or file is not accessible"), category="error")
         return redirect(url_for("index"))
 
-    for index in range(0, len(book.languages)):
+    for indx in range(0, len(book.languages)):
+        book.languages[indx].language_name = language_table[get_locale()][book.languages[indx].lang_code]
+    for authr in book.authors:
+        author_names.append(authr.name.replace('|', ','))
+
+    # Option for showing convertbook button
+    valid_source_formats=list()
+    if config.config_ebookconverter == 2:
+        for file in book.data:
+            if file.format.lower() in EXTENSIONS_CONVERT:
+                valid_source_formats.append(file.format.lower())
+
+    # Determine what formats don't already exist
+    allowed_conversion_formats = EXTENSIONS_CONVERT.copy()
+    for file in book.data:
         try:
-            book.languages[index].language_name = LC.parse(book.languages[index].lang_code).get_language_name(
-                get_locale())
+            allowed_conversion_formats.remove(file.format.lower())
         except Exception:
-            book.languages[index].language_name = _(isoLanguages.get(part3=book.languages[index].lang_code).name)
-    for author in book.authors:
-        author_names.append(author.name.replace('|', ','))
+            app.logger.warning(file.format.lower() + ' already removed from list.')
+
+    app.logger.debug('Allowed conversion formats: '+ ', '.join(allowed_conversion_formats))
 
     # Show form
     if request.method != 'POST':
         return render_title_template('book_edit.html', book=book, authors=author_names, cc=cc,
-                                     title=_(u"edit metadata"), page="editbook")
-
-    # Update book
-    edited_books_id = set()
-
+                                     title=_(u"edit metadata"), page="editbook",
+                                     conversion_formats=allowed_conversion_formats,
+                                     source_formats=valid_source_formats)
     # Check and handle Uploaded file
     if 'btn-upload-format' in request.files:
         requested_file = request.files['btn-upload-format']
@@ -3087,8 +3292,9 @@ def edit_book(book_id):
         if requested_file.filename != '':
             if '.' in requested_file.filename:
                 file_ext = requested_file.filename.rsplit('.', 1)[-1].lower()
-                if file_ext not in ALLOWED_EXTENSIONS:
-                    flash(_('File extension "%s" is not allowed to be uploaded to this server' % file_ext), category="error")
+                if file_ext not in EXTENSIONS_UPLOAD:
+                    flash(_("File extension '%(ext)s' is not allowed to be uploaded to this server", ext=file_ext),
+                          category="error")
                     return redirect(url_for('show_book', book_id=book.id))
             else:
                 flash(_('File to be uploaded must have an extension'), category="error")
@@ -3103,12 +3309,12 @@ def edit_book(book_id):
                 try:
                     os.makedirs(filepath)
                 except OSError:
-                    flash(_(u"Failed to create path %s (Permission denied)." % filepath), category="error")
+                    flash(_(u"Failed to create path %(path)s (Permission denied).", path=filepath), category="error")
                     return redirect(url_for('show_book', book_id=book.id))
             try:
                 requested_file.save(saved_filename)
             except OSError:
-                flash(_(u"Failed to store file %s." % saved_filename), category="error")
+                flash(_(u"Failed to store file %(file)s.", file=saved_filename), category="error")
                 return redirect(url_for('show_book', book_id=book.id))
 
             file_size = os.path.getsize(saved_filename)
@@ -3124,17 +3330,46 @@ def edit_book(book_id):
                 db.session.connection().connection.connection.create_function("title_sort", 1, db.title_sort)
 
             # Queue uploader info
-            uploadText=_(u"File format %s added to %s" % (file_ext.upper(),book.title))
+            uploadText=_(u"File format %(ext)s added to %(book)s", ext=file_ext.upper(), book=book.title)
             helper.global_WorkerThread.add_upload(current_user.nickname, 
-                "<a href=\""+ url_for('show_book', book_id=book.id) +"\">"+ uploadText + "</a>")
+                "<a href=\"" + url_for('show_book', book_id=book.id) + "\">" + uploadText + "</a>")
 
+    if 'btn-upload-cover' in request.files:
+        requested_file = request.files['btn-upload-cover']
+        # check for empty request
+        if requested_file.filename != '':
+            file_ext = requested_file.filename.rsplit('.', 1)[-1].lower()
+            filepath = os.path.normpath(os.path.join(config.config_calibre_dir, book.path))
+            saved_filename = os.path.join(filepath,  'cover.' + file_ext)
+
+            # check if file path exists, otherwise create it, copy file to calibre path and delete temp file
+            if not os.path.exists(filepath):
+                try:
+                    os.makedirs(filepath)
+                except OSError:
+                    flash(_(u"Failed to create path for cover %(path)s (Permission denied).", cover=filepath), category="error")
+                    return redirect(url_for('show_book', book_id=book.id))
+            try:
+                requested_file.save(saved_filename)
+                # im=Image.open(saved_filename)
+                book.has_cover = 1
+            except OSError:
+                flash(_(u"Failed to store cover-file %(cover)s.", cover=saved_filename), category="error")
+                return redirect(url_for('show_book', book_id=book.id))
+            except IOError:
+                flash(_(u"Cover-file is not a valid image file" % saved_filename), category="error")
+                return redirect(url_for('show_book', book_id=book.id))
     to_save = request.form.to_dict()
 
     try:
+        # Update book
+        edited_books_id = set()
+        #handle book title
         if book.title != to_save["book_title"]:
             book.title = to_save["book_title"]
             edited_books_id.add(book.id)
 
+        # handle author(s)
         input_authors = to_save["author_name"].split('&')
         input_authors = list(map(lambda it: it.strip().replace(',', '|'), input_authors))
         # we have all author names now
@@ -3170,21 +3405,21 @@ def edit_book(book_id):
             if book.series_index != to_save["series_index"]:
                 book.series_index = to_save["series_index"]
 
+            # Handle book comments/description
             if len(book.comments):
                 book.comments[0].text = to_save["description"]
             else:
                 book.comments.append(db.Comments(text=to_save["description"], book=book.id))
 
+            # Handle book tags
             input_tags = to_save["tags"].split(',')
             input_tags = list(map(lambda it: it.strip(), input_tags))
             modify_database_object(input_tags, book.tags, db.Tags, db.session, 'tags')
 
+            # Handle book series
             input_series = [to_save["series"].strip()]
             input_series = [x for x in input_series if x != '']
             modify_database_object(input_series, book.series, db.Series, db.session, 'series')
-
-            input_languages = to_save["languages"].split(',')
-            input_languages = list(map(lambda it: it.strip().lower(), input_languages))
 
             if to_save["pubdate"]:
                 try:
@@ -3193,18 +3428,25 @@ def edit_book(book_id):
                     book.pubdate = db.Books.DEFAULT_PUBDATE
             else:
                 book.pubdate = db.Books.DEFAULT_PUBDATE
+            '''if len(book.publishers):
+                if to_save["publisher"] != book.publishers[0].name:
+                    modify_database_object(to_save["publisher"], book.publishers, db.Publishers, db.session, 'series')
+            else:
+                modify_database_object(to_save["publisher"], book.publishers, db.Publishers, db.session, 'series')'''
 
-            # retranslate displayed text to language codes
-            languages = db.session.query(db.Languages).all()
+            # handle book languages
+            input_languages = to_save["languages"].split(',')
+            # input_languages = list(map(lambda it: it.strip().lower(), input_languages))
+            input_languages = [x.strip().lower() for x in input_languages if x != '']
             input_l = []
-            for lang in languages:
+            invers_lang_table = [x.lower() for x in language_table[get_locale()].values()]
+            for lang in input_languages:
                 try:
-                    lang.name = LC.parse(lang.lang_code).get_language_name(get_locale()).lower()
-                except Exception:
-                    lang.name = _(isoLanguages.get(part3=lang.lang_code).name).lower()
-                for inp_lang in input_languages:
-                    if inp_lang == lang.name:
-                        input_l.append(lang.lang_code)
+                    res = list(language_table[get_locale()].keys())[invers_lang_table.index(lang)]
+                    input_l.append(res)
+                except ValueError:
+                    app.logger.error('%s is not a valid language' % lang)
+                    flash(_(u"%(langname)s is not a valid language", langname=lang), category="error")
             modify_database_object(input_l, book.languages, db.Languages, db.session, 'languages')
 
             if to_save["rating"].strip():
@@ -3283,6 +3525,7 @@ def edit_book(book_id):
                                 if new_cc is None:
                                     new_cc = cc_class(value=to_save[cc_string].strip())
                                     db.session.add(new_cc)
+                                    db.session.flush()
                                     new_cc = db.session.query(cc_class).filter(
                                         cc_class.value == to_save[cc_string].strip()).first()
                                 # add cc value to book
@@ -3297,16 +3540,24 @@ def edit_book(book_id):
                 else:
                     input_tags = to_save[cc_string].split(',')
                     input_tags = list(map(lambda it: it.strip(), input_tags))
-                    modify_database_object(input_tags, getattr(book, cc_string), db.cc_classes[c.id], db.session, 'custom')
+                    modify_database_object(input_tags, getattr(book, cc_string), db.cc_classes[c.id], db.session,
+                                           'custom')
             db.session.commit()
             if config.config_use_google_drive:
                 gdriveutils.updateGdriveCalibreFromLocal()
-            author_names = []
-            for author in book.authors:
-                author_names.append(author.name)
             if "detail_view" in to_save:
                 return redirect(url_for('show_book', book_id=book.id))
             else:
+                for indx in range(0, len(book.languages)):
+                    try:
+                        book.languages[indx].language_name = LC.parse(book.languages[indx].lang_code).get_language_name(
+                            get_locale())
+                    except UnknownLocaleError:
+                        book.languages[indx].language_name = _(
+                            isoLanguages.get(part3=book.languages[indx].lang_code).name)
+                author_names = []
+                for authr in book.authors:
+                    author_names.append(authr.name)
                 return render_title_template('book_edit.html', book=book, authors=author_names, cc=cc,
                                              title=_(u"edit metadata"), page="editbook")
         else:
@@ -3336,12 +3587,10 @@ def upload():
             # check if file extension is correct
             if '.' in requested_file.filename:
                 file_ext = requested_file.filename.rsplit('.', 1)[-1].lower()
-                if file_ext not in ALLOWED_EXTENSIONS:
+                if file_ext not in EXTENSIONS_UPLOAD:
                     flash(
-                        _('File extension "%s" is not allowed to be uploaded to this server' %
-                        file_ext),
-                        category="error"
-                    )
+                        _("File extension '%(ext)s' is not allowed to be uploaded to this server",
+                          ext=file_ext), category="error")
                     return redirect(url_for('index'))
             else:
                 flash(_('File to be uploaded must have an extension'), category="error")
@@ -3350,12 +3599,12 @@ def upload():
             # extract metadata from file
             meta = uploader.upload(requested_file)
             title = meta.title
-            author = meta.author
+            authr = meta.author
             tags = meta.tags
             series = meta.series
             series_index = meta.series_id
             title_dir = helper.get_valid_filename(title)
-            author_dir = helper.get_valid_filename(author)
+            author_dir = helper.get_valid_filename(authr)
             filepath = os.path.join(config.config_calibre_dir, author_dir, title_dir)
             saved_filename = os.path.join(filepath, title_dir + meta.extension.lower())
 
@@ -3364,17 +3613,17 @@ def upload():
                 try:
                     os.makedirs(filepath)
                 except OSError:
-                    flash(_(u"Failed to create path %s (Permission denied)." % filepath), category="error")
+                    flash(_(u"Failed to create path %(path)s (Permission denied).", path=filepath), category="error")
                     return redirect(url_for('index'))
             try:
                 copyfile(meta.file_path, saved_filename)
             except OSError:
-                flash(_(u"Failed to store file %s (Permission denied)." % saved_filename), category="error")
+                flash(_(u"Failed to store file %(file)s (Permission denied).", file=saved_filename), category="error")
                 return redirect(url_for('index'))
             try:
                 os.unlink(meta.file_path)
             except OSError:
-                flash(_(u"Failed to delete file %s (Permission denied)." % meta.file_path), category="warning")
+                flash(_(u"Failed to delete file %(file)s (Permission denied).", file= meta.file_path), category="warning")
 
             if meta.cover is None:
                 has_cover = 0
@@ -3384,11 +3633,11 @@ def upload():
                 move(meta.cover, os.path.join(filepath, "cover.jpg"))
 
             # handle authors
-            is_author = db.session.query(db.Authors).filter(db.Authors.name == author).first()
+            is_author = db.session.query(db.Authors).filter(db.Authors.name == authr).first()
             if is_author:
                 db_author = is_author
             else:
-                db_author = db.Authors(author, helper.get_sorted_author(author), "")
+                db_author = db.Authors(authr, helper.get_sorted_author(authr), "")
                 db.session.add(db_author)
             
             # handle series
@@ -3456,7 +3705,7 @@ def upload():
                 gdriveutils.updateGdriveCalibreFromLocal()
             if error:
                 flash(error, category="error")
-            uploadText=_(u"File %s uploaded" % book.title)
+            uploadText=_(u"File %(file)s uploaded", file=book.title)
             helper.global_WorkerThread.add_upload(current_user.nickname, 
                 "<a href=\"" + url_for('show_book', book_id=book.id) + "\">" + uploadText + "</a>")
 
@@ -3476,3 +3725,29 @@ def upload():
                                              title=book.title, books_shelfs=book_in_shelfs, page="upload")
     return redirect(url_for("index"))
 
+
+@app.route("/admin/book/convert/<int:book_id>", methods=['POST'])
+@login_required_if_no_ano
+@edit_required
+def convert_bookformat(book_id):
+    # check to see if we have form fields to work with -  if not send user back
+    book_format_from = request.form.get('book_format_from', None)
+    book_format_to = request.form.get('book_format_to', None)
+
+    if (book_format_from is None) or (book_format_to is None):
+        flash(_(u"Source or destination format for conversion missing"), category="error")
+        return redirect(request.environ["HTTP_REFERER"])
+
+    app.logger.debug('converting: book id: ' + str(book_id) +
+                     ' from: ' + request.form['book_format_from'] +
+                     ' to: ' + request.form['book_format_to'])
+    rtn = helper.convert_book_format(book_id, config.config_calibre_dir, book_format_from.upper(),
+                                     book_format_to.upper(), current_user.nickname)
+
+    if rtn is None:
+        flash(_(u"Book successfully queued for converting to %(book_format)s",
+                    book_format=book_format_to),
+                    category="success")
+    else:
+        flash(_(u"There was an error converting this book: %(res)s", res=rtn), category="error")
+    return redirect(request.environ["HTTP_REFERER"])
