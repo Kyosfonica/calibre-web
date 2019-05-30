@@ -31,15 +31,19 @@
           </label>
         </div>
       {% else %}
-        {% if show_authenticate_google_drive and g.user.is_authenticated %}
+        {% if show_authenticate_google_drive and g.user.is_authenticated and content.config_use_google_drive %}
           <div class="form-group required">
             <a href="{{ url_for('authenticate_google_drive') }}" class="btn btn-primary">{{_('Authenticate Google Drive')}}</a>
           </div>
         {% else %}
-          {% if show_authenticate_google_drive and not g.user.is_authenticated %}
+            {% if show_authenticate_google_drive and g.user.is_authenticated and not content.config_use_google_drive %}
+            <div >{{_('Please hit submit to continue with setup')}}</div>
+            {% endif %}
+          {% if not g.user.is_authenticated %}
           <div >{{_('Please finish Google Drive setup after login')}}</div>
-          {% endif %}
-          {% if not show_authenticate_google_drive %}
+            {% endif %}
+          {% if g.user.is_authenticated %}
+            {% if not show_authenticate_google_drive %}
           <div class="form-group required">
             <label for="config_google_drive_folder">{{_('Google Drive Calibre folder')}}</label>
               <select name="config_google_drive_folder" id="config_google_drive_folder" class="form-control">
@@ -56,6 +60,7 @@
             </div>
           {% else %}
             <a href="{{ url_for('watch_gdrive') }}" class="btn btn-primary">Enable watch of metadata.db</a>
+          {% endif %}
           {% endif %}
           {% endif %}
         {% endif %}
@@ -76,7 +81,7 @@
     </div>
     <div id="collapsetwo" class="panel-collapse collapse">
       <div class="panel-body">
-                <div class="form-group">
+        <div class="form-group">
           <label for="config_port">{{_('Server Port')}}</label>
           <input type="number" min="1" max="65535" class="form-control" name="config_port" id="config_port" value="{% if content.config_port != None %}{{ content.config_port }}{% endif %}" autocomplete="off" required>
         </div>
@@ -87,6 +92,15 @@
         <div class="form-group">
           <label for="config_keyfile">{{_('SSL Keyfile location (leave it empty for non-SSL Servers)')}}</label>
           <input type="text" class="form-control" name="config_keyfile" id="config_keyfile" value="{% if content.config_keyfile != None %}{{ content.config_keyfile }}{% endif %}" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="config_updater">{{_('Update channel')}}</label>
+            <select name="config_updater" id="config_updater" class="form-control">
+                    <option value="0" {% if content.config_updatechannel == 0 %}selected{% endif %}>{{_('Stable')}}</option>
+                    <!--option value="1" {% if content.config_updatechannel == 1 %}selected{% endif %}>{{_('Stable (Automatic)')}}</option-->
+                    <option value="2" {% if content.config_updatechannel == 2 %}selected{% endif %}>{{_('Nightly')}}</option>
+                    <!--option-- value="3" {% if content.config_updatechannel == 3 %}selected{% endif %}>{{_('Nightly (Automatic)')}}</option-->
+            </select>
         </div>
       </div>
     </div>
@@ -170,7 +184,7 @@
       <h4 class="panel-title">
         <a class="accordion-toggle" data-toggle="collapse" href="#collapseeight">
           <span class="glyphicon glyphicon-plus"></span>
-           {{_('E-Book converter')}}
+           {{_('External binaries')}}
         </a>
       </h4>
     </div>
@@ -179,9 +193,9 @@
           <div class="form-group">
               <div><input type="radio" name="config_ebookconverter" id="converter0" value="0" {% if content.config_ebookconverter == 0 %}checked{% endif %}>
               <label for="converter0">{{_('No converter')}}</label></div>
-              <div><label><input type="radio" name="config_ebookconverter" id="converter1" value="1" {% if content.config_ebookconverter == 1 %}checked{% endif %}>
+              <div><input type="radio" name="config_ebookconverter" id="converter1" value="1" {% if content.config_ebookconverter == 1 %}checked{% endif %}>
               <label for="converter1">{{_('Use Kindlegen')}}</label></div>
-              <div><label><input type="radio" name="config_ebookconverter" id="converter2" value="2" {% if content.config_ebookconverter == 2 %}checked{% endif %}>
+              <div><input type="radio" name="config_ebookconverter" id="converter2" value="2" {% if content.config_ebookconverter == 2 %}checked{% endif %}>
               <label for="converter2">{{_('Use calibre\'s ebook converter')}}</label></div>
           </div>
           <div data-related="calibre">
@@ -194,6 +208,12 @@
                 <input type="text" class="form-control" id="config_converterpath" name="config_converterpath" value="{% if content.config_converterpath != None %}{{ content.config_converterpath }}{% endif %}" autocomplete="off">
             </div>
           </div>
+          {% if rarfile_support %}
+            <div class="form-group">
+                <label for="config_rarfile_location">{{_('Location of Unrar binary')}}</label>
+                <input type="text" class="form-control" name="config_rarfile_location" id="config_rarfile_location" value="{% if content.config_rarfile_location != None %}{{ content.config_rarfile_location }}{% endif %}" autocomplete="off">
+            </div>
+          {% endif %}
       </div>
     </div>
   </div>
@@ -201,12 +221,12 @@
 
 
     <div class="col-sm-12">
-    <button type="submit" class="btn btn-default">{{_('Submit')}}</button>
+    <button type="submit" name="submit" class="btn btn-default">{{_('Submit')}}</button>
     {% if not origin %}
       <a href="{{ url_for('admin') }}" class="btn btn-default">{{_('Back')}}</a>
     {% endif %}
     {% if success %}
-      <a href="{{ url_for('login') }}" class="btn btn-default">{{_('Login')}}</a>
+      <a href="{{ url_for('login') }}" name="login" class="btn btn-default">{{_('Login')}}</a>
     {% endif %}
     </div>
   </form>
