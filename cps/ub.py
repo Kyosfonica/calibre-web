@@ -211,6 +211,7 @@ class Anonymous(AnonymousUserMixin, UserBase):
         self.locale = data.locale
         self.mature_content = data.mature_content
         self.anon_browse = settings.config_anonbrowse
+        self.kindle_mail = data.kindle_mail
 
     def role_admin(self):
         return False
@@ -315,6 +316,7 @@ class Settings(Base):
     config_calibre_web_title = Column(String, default=u'Calibre-Web')
     config_books_per_page = Column(Integer, default=60)
     config_random_books = Column(Integer, default=4)
+    config_authors_max = Column(Integer, default=0)
     config_read_column = Column(Integer, default=0)
     config_title_regex = Column(String, default=u'^(A|The|An|Der|Die|Das|Den|Ein|Eine|Einen|Dem|Des|Einem|Eines)\s+')
     config_log_level = Column(SmallInteger, default=logging.INFO)
@@ -354,7 +356,7 @@ class RemoteAuthToken(Base):
     expiration = Column(DateTime)
 
     def __init__(self):
-        self.auth_token = hexlify(os.urandom(4))
+        self.auth_token = (hexlify(os.urandom(4))).decode('utf-8')
         self.expiration = datetime.datetime.now() + datetime.timedelta(minutes=10)  # 10 min from now
 
     def __repr__(self):
@@ -380,6 +382,7 @@ class Config:
         self.config_calibre_web_title = data.config_calibre_web_title
         self.config_books_per_page = data.config_books_per_page
         self.config_random_books = data.config_random_books
+        self.config_authors_max = data.config_authors_max
         self.config_title_regex = data.config_title_regex
         self.config_read_column = data.config_read_column
         self.config_log_level = data.config_log_level
@@ -600,6 +603,12 @@ def migrate_Database():
     except exc.OperationalError:  # Database is not compatible, some rows are missing
         conn = engine.connect()
         conn.execute("ALTER TABLE Settings ADD column `config_default_role` SmallInteger DEFAULT 0")
+        session.commit()
+    try:
+        session.query(exists().where(Settings.config_authors_max)).scalar()
+    except exc.OperationalError:  # Database is not compatible, some rows are missing
+        conn = engine.connect()
+        conn.execute("ALTER TABLE Settings ADD column `config_authors_max` INTEGER DEFAULT 0")
         session.commit()
     try:
         session.query(exists().where(BookShelf.order)).scalar()

@@ -6,6 +6,7 @@
  * Version 1.0.0
  * Licensed under the MIT license.
  */
+
 (function($) {
     "use strict";
 
@@ -18,7 +19,7 @@
     }
 
     var template = "<div class=\"modal fade\" id=\"file-progress-modal\">" +
-    "<div class=\"modal-dialog\">" +
+    "<div class=\"modal-dialog upload-modal-dialog\">" +
     "  <div class=\"modal-content\">" +
     "    <div class=\"modal-header\">" +
     "      <button type=\"button\" class=\"close\" data-dismiss=\"modal\" aria-label=\"Close\"><span aria-hidden=\"true\">&times;</span></button>" +
@@ -57,13 +58,13 @@
 
             // Translate texts
             this.$modalTitle.text(this.options.modalTitle)
-            this.$modalFooter.children("button").text(this.options.modalFooter)
+            this.$modalFooter.children("button").text(this.options.modalFooter);
 
             this.$modal.on("hidden.bs.modal", $.proxy(this.reset, this));
         },
 
         reset: function() {
-            this.$modalTitle.text(this.options.modalTitle)
+            this.$modalTitle.text(this.options.modalTitle);
             this.$modalFooter.hide();
             this.$modalBar.addClass("progress-bar-success");
             this.$modalBar.removeClass("progress-bar-danger");
@@ -103,7 +104,7 @@
                 // HTTP 500 ends up here!?!
                 return this.error(xhr);
             }
-            this.set_progress(100);
+            this.setProgress(100);
             var url;
             var contentType = xhr.getResponseHeader("Content-Type");
 
@@ -129,28 +130,25 @@
             this.$modalFooter.show();
 
             var contentType = xhr.getResponseHeader("Content-Type");
-            // Replace the contents of the form, with the returned html
-            if (xhr.status === 422) {
-                var newHtml = $.parseHTML(xhr.responseText);
-                this.$modalBar.text(newHtml[0].data);
-                //this.$modal.modal("hide");
-            }
             // Write the error response to the document.
-            else{
+            if (contentType || xhr.status === 422) {
                 var responseText = xhr.responseText;
-                // Handle no response error
-                if (contentType) {
-                    if (contentType.indexOf("text/plain") !== -1) {
-                        responseText = "<pre>" + responseText + "</pre>";
-                    }
-                    document.write(xhr.responseText);
+                if (contentType.indexOf("text/plain") !== -1) {
+                    responseText = "<pre>" + responseText + "</pre>";
+                    document.write(responseText);
                 }
+                else {
+                    this.$modalBar.text(responseText);
+                }
+            }
+            else {
+                this.$modalBar.text(this.options.modalTitleFailed);
             }
         },
 
-        set_progress: function(percent){
+        setProgress: function(percent) {
             var txt = percent + "%";
-            if (percent == 100) {
+            if (percent === 100) {
                 txt = this.options.uploadedMsg;
             }
             this.$modalBar.attr("aria-valuenow", percent);
@@ -158,21 +156,20 @@
             this.$modalBar.css("width", percent + "%");
         },
 
-        progress: function(/*ProgressEvent*/e){
+        progress: function(/*ProgressEvent*/e) {
             var percent = Math.round((e.loaded / e.total) * 100);
-            this.set_progress(percent);
+            this.setProgress(percent);
         },
 
-        // replace_form replaces the contents of the current form
+        // replaceForm replaces the contents of the current form
         // with the form in the html argument.
         // We use the id of the current form to find the new form in the html
-        replace_form: function(html) {
+        replaceForm: function(html) {
             var newForm;
             var formId = this.$form.attr("id");
-            if(formId !== undefined){
+            if ( typeof formId !== "undefined") {
                 newForm = $(html).find("#" + formId);
-            }
-            else{
+            } else {
                 newForm = $(html).find("form");
             }
             // add the filestyle again
@@ -181,11 +178,11 @@
         }
     };
 
-    $.fn.uploadprogress = function(options, value){
+    $.fn.uploadprogress = function(options) {
         return this.each(function() {
             var _options = $.extend({}, $.fn.uploadprogress.defaults, options);
-            var file_progress = new UploadProgress(this, _options);
-            file_progress.constructor();
+            var fileProgress = new UploadProgress(this, _options);
+            fileProgress.constructor();
         });
     };
 
