@@ -28,7 +28,7 @@
           </div>
         {% endif %}
       {% endif %}
-      <div class="filterheader hidden-xs hidden-sm"><!-- ToDo: Implement filter for search results -->
+      <div class="filterheader hidden-lg hidden-md hidden-xs hidden-sm"><!-- ToDo: Implement filter for search results -->
         <a id="new" class="btn btn-primary" href="{{url_for('web.books_list', data=page, sort='new')}}"><span class="glyphicon glyphicon-sort-by-order"></span></a>
         <a id="old" class="btn btn-primary" href="{{url_for('web.books_list', data=page, sort='old')}}"><span class="glyphicon glyphicon-sort-by-order-alt"></span></a>
         <a id="asc" class="btn btn-primary" href="{{url_for('web.books_list', data=page, sort='abc')}}"><span class="glyphicon glyphicon-font"></span><span class="glyphicon glyphicon-sort-by-alphabet"></span></a>
