@@ -12,7 +12,7 @@ Calibre-Web is a web app providing a clean interface for browsing, reading and d
 - full graphical setup
 - User management with fine-grained per-user permissions
 - Admin interface
-- User Interface in czech, dutch, english, finnish, french, german, hungarian, italian, japanese, khmer, polish, russian, simplified chinese, spanish, swedish, ukrainian
+- User Interface in czech, dutch, english, finnish, french, german, greek, hungarian, italian, japanese, khmer, polish, russian, simplified chinese, spanish, swedish, turkish, ukrainian
 - OPDS feed for eBook reader apps 
 - Filter and search by titles, authors, tags, series and language
 - Create a custom book collection (shelves)
@@ -21,12 +21,14 @@ Calibre-Web is a web app providing a clean interface for browsing, reading and d
 - Restrict eBook download to logged-in users
 - Support for public user registration
 - Send eBooks to Kindle devices with the click of a button
+- Sync your Kobo devices through Calibre-Web with your Calibre library
 - Support for reading eBooks directly in the browser (.txt, .epub, .pdf, .cbr, .cbt, .cbz)
-- Upload new books in many formats
-- Support for Calibre custom columns
-- Ability to hide content based on categories for certain users
+- Upload new books in many formats, including audio formats (.mp3, .m4a, .m4b)
+- Support for Calibre Custom Columns
+- Ability to hide content based on categories and Custom Column content per user
 - Self-update capability
 - "Magic Link" login to make it easy to log on eReaders
+- Login via LDAP, google/github oauth and via proxy authentication
 
 ## Quick start
 
@@ -52,23 +54,21 @@ Optionally, to enable on-the-fly conversion from one ebook format to another whe
 
 [Download and install](https://calibre-ebook.com/download) the Calibre desktop program for your platform and enter the folder including program name (normally /opt/calibre/ebook-convert, or C:\Program Files\calibre\ebook-convert.exe) in the field "calibre's converter tool" on the setup page.
 
-\*** DEPRECATED \*** Support will be removed in future releases
-
-[Download](http://www.amazon.com/gp/feature.html?docId=1000765211) Amazon's KindleGen tool for your platform and place the binary named `kindlegen` in the `vendor` folder.
+[Download](https://github.com/pgaskin/kepubify/releases/latest) Kepubify tool for your platform and place the binary starting with `kepubify` in Linux: `\opt\kepubify` Windows: `C:\Program Files\kepubify`.
 
 ## Docker Images
 
 Pre-built Docker images are available in these Docker Hub repositories:
 
 #### **Technosoft2000 - x64**
-+ Docker Hub - [https://hub.docker.com/r/technosoft2000/calibre-web/](https://hub.docker.com/r/technosoft2000/calibre-web/)
++ Docker Hub - [https://hub.docker.com/r/technosoft2000/calibre-web](https://hub.docker.com/r/technosoft2000/calibre-web)
 + Github - [https://github.com/Technosoft2000/docker-calibre-web](https://github.com/Technosoft2000/docker-calibre-web) 
 
     Includes the Calibre `ebook-convert` binary.
     + The "path to convertertool" should be set to `/opt/calibre/ebook-convert`
 
 #### **LinuxServer - x64, armhf, aarch64**
-+ Docker Hub - [https://hub.docker.com/r/linuxserver/calibre-web/](https://hub.docker.com/r/linuxserver/calibre-web/)
++ Docker Hub - [https://hub.docker.com/r/linuxserver/calibre-web](https://hub.docker.com/r/linuxserver/calibre-web)
 + Github - [https://github.com/linuxserver/docker-calibre-web](https://github.com/linuxserver/docker-calibre-web)
 + Github - (Optional Calibre layer) - [https://github.com/linuxserver/docker-calibre-web/tree/calibre](https://github.com/linuxserver/docker-calibre-web/tree/calibre) 
 
@@ -83,3 +83,7 @@ Pre-built Docker images are available in these Docker Hub repositories:
 # Wiki
 
 For further information, How To's and FAQ please check the [Wiki](https://github.com/janeczku/calibre-web/wiki)
+
+# Contributing to Calibre-Web
+
+Please have a look at our [Contributing Guidelines](https://github.com/janeczku/calibre-web/blob/master/CONTRIBUTING.md) 
